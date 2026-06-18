@@ -132,7 +132,6 @@ class MuQLoRATrainingTest(unittest.TestCase):
             alpha=4.0,
             target_modules=["linear_q"],
             num_target_layers=1,
-            reinit_muq_head=True,
             train_muq_head=True,
         )
 

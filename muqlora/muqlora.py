@@ -42,6 +42,27 @@ class LoRALinear(nn.Module):
 
 
 class MuQLoRA(nn.Module):
+    """LoRA wrapper for MuQ's Conformer encoder.
+
+    The default path is feature-only: it runs MuQ preprocessing, conv
+    subsampling, and the Conformer encoder, while skipping MuQ's original
+    codebook projection head. Passing ``heads`` turns the module into a
+    multi-task model that feeds pooled encoder features to each task head.
+
+    Input waveform shape:
+        ``[batch_size, timestep]`` or ``[batch_size, audio_channel=1, timestep]``.
+
+    Feature-only output:
+        A BaseModelOutput-like object from the Conformer encoder where
+        ``last_hidden_state`` has shape ``[batch_size, frame_count, hidden_size]``.
+
+    Multi-head output:
+        A dict mapping task name to each head output. With ``pooling="mean"``
+        or ``"cls"``, each head receives ``[batch_size, hidden_size]``.
+        With ``pooling="none"``, each head receives
+        ``[batch_size, frame_count, hidden_size]``.
+    """
+
     def __init__(
         self,
         model: muq.MuQ,
@@ -132,6 +153,21 @@ class MuQLoRA(nn.Module):
         return self
 
     def prepare_encoder_inputs(self, x, attention_mask: torch.Tensor | None = None):
+        """Convert raw waveform to Conformer-ready frames.
+
+        Args:
+            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
+                single-channel ``[batch_size, 1, timestep]``.
+            attention_mask: Optional waveform-level mask shaped
+                ``[batch_size, timestep]``.
+
+        Returns:
+            A pair ``(hidden_states, encoder_attention_mask)`` where
+            ``hidden_states`` is shaped ``[batch_size, frame_count, hidden_size]``
+            after MuQ's mel preprocessing and conv subsampling, and
+            ``encoder_attention_mask`` is downsampled to
+            ``[batch_size, frame_count]`` when provided.
+        """
         muq_model = self.model.model
 
         x = muq_model.preprocessing(x, features=["melspec_2048"])
@@ -157,6 +193,20 @@ class MuQLoRA(nn.Module):
         return_dict: bool = True,
         return_attention_mask: bool = False,
     ):
+        """Run the MuQ encoder without computing the original codebook logits.
+
+        Args:
+            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
+                ``[batch_size, 1, timestep]``.
+            attention_mask: Optional waveform-level mask shaped
+                ``[batch_size, timestep]``.
+
+        Returns:
+            By default, a Conformer BaseModelOutput-like object whose
+            ``last_hidden_state`` is ``[batch_size, frame_count, hidden_size]``.
+            If ``return_attention_mask=True``, returns
+            ``(features, encoder_attention_mask)``.
+        """
         hidden_states, encoder_attention_mask = self.prepare_encoder_inputs(x, attention_mask)
         outputs = self.model.model.conformer(
             hidden_states,
@@ -175,6 +225,19 @@ class MuQLoRA(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Pool encoder frames before task heads.
+
+        Args:
+            hidden_states: Encoder features shaped
+                ``[batch_size, frame_count, hidden_size]``.
+            attention_mask: Optional encoder-level mask shaped
+                ``[batch_size, frame_count]``.
+
+        Returns:
+            ``[batch_size, hidden_size]`` for ``"mean"`` and ``"cls"`` pooling,
+            or the unpooled ``[batch_size, frame_count, hidden_size]`` tensor
+            when pooling is ``None`` or ``"none"``.
+        """
         if self.pooling is None or self.pooling == "none":
             return hidden_states
 
@@ -202,6 +265,26 @@ class MuQLoRA(nn.Module):
         return_features: bool = False,
         **kwargs,
     ):
+        """Run feature extraction, multi-head prediction, or the original MuQ path.
+
+        Args:
+            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
+                single-channel ``[batch_size, 1, timestep]``.
+            attention_mask: Optional waveform-level mask shaped
+                ``[batch_size, timestep]``.
+            return_features: In multi-head mode, return
+                ``(task_outputs, encoder_features)`` instead of only
+                ``task_outputs``.
+
+        Returns:
+            If ``heads`` were provided, returns ``dict[str, torch.Tensor]``.
+            If ``return_features=True``, returns
+            ``(dict[str, torch.Tensor], BaseModelOutput)``.
+            If no heads are provided and ``feature_only=True``, returns
+            encoder features with ``last_hidden_state`` shaped
+            ``[batch_size, frame_count, hidden_size]``.
+            If ``feature_only=False``, delegates to the wrapped MuQ model.
+        """
         if self.heads is not None:
             features, encoder_attention_mask = self.encode(
                 x,

@@ -31,6 +31,65 @@ class LoRALinear(nn.Module):
 
         self.lora_A = nn.Linear(self.in_features, r, bias=False)
         self.lora_B = nn.Linear(r, self.out_features, bias=False)
+        self.lora_A.to(device=module.weight.device, dtype=module.weight.dtype)
+        self.lora_B.to(device=module.weight.device, dtype=module.weight.dtype)
+
+        with torch.no_grad():
+            nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+            self.lora_B.weight.zero_()
+
+        self.lora_A.requires_grad_(True)
+        self.lora_B.requires_grad_(True)
+
+    def forward(self, x):
+        return self.module(x) + self.lora_B(self.lora_A(x)) * self.scaling
+
+    def train(self, mode: bool = True):
+        self.training = mode
+        self.module.eval()
+        self.lora_A.train(mode)
+        self.lora_B.train(mode)
+        return self
+
+
+class LoRAConv1d(nn.Module):
+    """LoRA adapter for pointwise Conv1d modules.
+
+    This is intended for MuQ Conformer ``pointwise_conv1`` and
+    ``pointwise_conv2`` modules, where input/output tensors are shaped
+    ``[batch_size, channels, frame_count]`` and the wrapped convolution has
+    ``kernel_size=1``.
+    """
+
+    def __init__(self, module: nn.Conv1d, r: int = 8, alpha: float = 16):
+        super().__init__()
+
+        if module.kernel_size != (1,):
+            raise ValueError("LoRAConv1d only supports pointwise Conv1d with kernel_size=1")
+        if module.groups != 1:
+            raise ValueError("LoRAConv1d only supports Conv1d with groups=1")
+
+        self.module = module
+        self.in_channels = module.in_channels
+        self.out_channels = module.out_channels
+        self.r = r
+        self.alpha = alpha
+        self.scaling = alpha / r
+
+        self.module.requires_grad_(False)
+
+        self.lora_A = nn.Conv1d(
+            self.in_channels,
+            r,
+            kernel_size=1,
+            stride=module.stride,
+            padding=module.padding,
+            dilation=module.dilation,
+            bias=False,
+        )
+        self.lora_B = nn.Conv1d(r, self.out_channels, kernel_size=1, bias=False)
+        self.lora_A.to(device=module.weight.device, dtype=module.weight.dtype)
+        self.lora_B.to(device=module.weight.device, dtype=module.weight.dtype)
 
         with torch.no_grad():
             nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
@@ -141,10 +200,14 @@ class MuQLoRA(nn.Module):
             if layer_count:
                 for name, module in layer.named_modules():
                     if name.split(".")[-1] in self.target_modules:
-                        if not isinstance(module, nn.Linear):
-                            raise TypeError(f"target module {name!r} is not nn.Linear")
-
-                        module = LoRALinear(module, r, alpha)
+                        if isinstance(module, nn.Linear):
+                            module = LoRALinear(module, r, alpha)
+                        elif isinstance(module, nn.Conv1d):
+                            module = LoRAConv1d(module, r, alpha)
+                        else:
+                            raise TypeError(
+                                f"target module {name!r} is not nn.Linear or nn.Conv1d"
+                            )
 
                         parent = layer
                         *path, last = name.split(".")
@@ -167,7 +230,7 @@ class MuQLoRA(nn.Module):
         if self.keep_base_model_eval:
             self.model.eval()
             for module in self.modules():
-                if isinstance(module, LoRALinear):
+                if isinstance(module, (LoRALinear, LoRAConv1d)):
                     module.train(mode)
         return self
 

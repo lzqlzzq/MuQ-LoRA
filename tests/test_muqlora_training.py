@@ -4,7 +4,7 @@ import muq
 import torch
 from torch import nn
 
-from muqlora import LoRALinear, MuQLoRA
+from muqlora import LoRALinear, MUQ_MEL_INPUT_CONFIG, MuQLoRA
 
 
 MODEL_ID = "OpenMuQ/MuQ-large-msd-iter"
@@ -16,6 +16,7 @@ def train_task_for_steps(
     x: torch.Tensor,
     target: torch.Tensor,
     steps: int = 2,
+    **forward_kwargs,
 ):
     optimizer = torch.optim.SGD(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
@@ -24,7 +25,7 @@ def train_task_for_steps(
 
     for _ in range(steps):
         optimizer.zero_grad()
-        output = model(x)[task_name]
+        output = model(x, **forward_kwargs)[task_name]
         loss = torch.nn.functional.mse_loss(output, target)
         loss.backward()
         optimizer.step()
@@ -65,9 +66,32 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         self.assertTrue(wrapped.lora_B.training)
         self.assertFalse(wrapped.module.weight.requires_grad)
 
-        x = torch.randn(1, 24000)
+        self.assertEqual(
+            MUQ_MEL_INPUT_CONFIG,
+            {
+                "sample_rate": 24000,
+                "n_fft": 2048,
+                "hop_length": 240,
+                "n_mels": 128,
+                "is_db": True,
+            },
+        )
+
+        # Raw MuQ waveform input: [batch_size, timestep], 1 second at 24 kHz.
+        waveform = torch.randn(1, 24000)
+        # Raw MuQ mel input: [batch_size, n_mels=128, mel_frame_count].
+        mel = model.model.model.preprocessor_melspec_2048(waveform.float())
+
+        waveform_output, waveform_features = model(waveform, return_features=True)
+        mel_output, mel_features = model(mel, input_type="mel", return_features=True)
+        torch.testing.assert_close(
+            mel_features.last_hidden_state,
+            waveform_features.last_hidden_state,
+        )
+        torch.testing.assert_close(mel_output["genre"], waveform_output["genre"])
+
         target = torch.randn(1, 4)
-        train_task_for_steps(model, "genre", x, target)
+        train_task_for_steps(model, "genre", mel, target, input_type="mel")
 
         self.assertTrue(torch.equal(wrapped.module.weight.detach(), wrapped_weight_before))
         self.assertTrue(torch.equal(wrapped.module.bias.detach(), wrapped_bias_before))

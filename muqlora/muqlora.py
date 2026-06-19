@@ -7,6 +7,15 @@ from torch import nn
 import muq
 
 
+MUQ_MEL_INPUT_CONFIG = {
+    "sample_rate": 24000,
+    "n_fft": 2048,
+    "hop_length": 240,
+    "n_mels": 128,
+    "is_db": True,
+}
+
+
 class LoRALinear(nn.Module):
     def __init__(self, module: nn.Linear, r: int = 8, alpha: float = 16):
         super().__init__()
@@ -51,6 +60,16 @@ class MuQLoRA(nn.Module):
 
     Input waveform shape:
         ``[batch_size, timestep]`` or ``[batch_size, audio_channel=1, timestep]``.
+
+    Input mel shape:
+        ``[batch_size, n_mels=128, mel_frame_count]`` or
+        ``[batch_size, audio_channel=1, n_mels=128, mel_frame_count]`` with
+        ``input_type="mel"``. The mel must be generated with MuQ's preprocessing
+        parameters: ``sample_rate=24000``, ``n_fft=2048``, ``hop_length=240``,
+        ``n_mels=128``, ``is_db=True``. MuQ removes the final mel frame in
+        preprocessing, so ``input_type="mel"`` applies the same ``[..., :-1]``
+        trim internally. Use ``input_type="muq_mel"`` if the tensor is already
+        the trimmed MuQ preprocessing output.
 
     Feature-only output:
         A BaseModelOutput-like object from the Conformer encoder where
@@ -152,29 +171,50 @@ class MuQLoRA(nn.Module):
                     module.train(mode)
         return self
 
-    def prepare_encoder_inputs(self, x, attention_mask: torch.Tensor | None = None):
-        """Convert raw waveform to Conformer-ready frames.
+    def prepare_encoder_inputs(
+        self,
+        x,
+        attention_mask: torch.Tensor | None = None,
+        input_type: str = "waveform",
+    ):
+        """Convert waveform or mel features to Conformer-ready frames.
 
         Args:
-            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
-                single-channel ``[batch_size, 1, timestep]``.
-            attention_mask: Optional waveform-level mask shaped
-                ``[batch_size, timestep]``.
+            x: Raw waveform shaped ``[batch_size, timestep]`` or
+                ``[batch_size, 1, timestep]`` when ``input_type="waveform"``.
+                Raw dB mel shaped ``[batch_size, 128, mel_frame_count]`` or
+                ``[batch_size, 1, 128, mel_frame_count]`` when
+                ``input_type="mel"``. Already-trimmed MuQ mel features with the
+                same mel shape when ``input_type="muq_mel"``.
+            attention_mask: Optional mask. For waveform input this is shaped
+                ``[batch_size, timestep]``. For mel input this is shaped
+                ``[batch_size, mel_frame_count]``.
+            input_type: ``"waveform"``, ``"mel"``, or ``"muq_mel"``.
 
         Returns:
             A pair ``(hidden_states, encoder_attention_mask)`` where
             ``hidden_states`` is shaped ``[batch_size, frame_count, hidden_size]``
-            after MuQ's mel preprocessing and conv subsampling, and
+            after MuQ's normalization and conv subsampling, and
             ``encoder_attention_mask`` is downsampled to
             ``[batch_size, frame_count]`` when provided.
         """
         muq_model = self.model.model
 
-        x = muq_model.preprocessing(x, features=["melspec_2048"])
-        x = muq_model.normalize(x)
-        hidden_states = muq_model.conv(x["melspec_2048"])
+        if input_type == "waveform":
+            features = muq_model.preprocessing(x, features=["melspec_2048"])
+        elif input_type == "mel":
+            features = {"melspec_2048": x[..., :-1]}
+        elif input_type == "muq_mel":
+            features = {"melspec_2048": x}
+        else:
+            raise ValueError(f"unsupported input_type: {input_type!r}")
+
+        features = muq_model.normalize(features)
+        hidden_states = muq_model.conv(features["melspec_2048"])
 
         if attention_mask is not None:
+            if input_type == "mel":
+                attention_mask = attention_mask[..., :-1]
             attention_mask = attention_mask.bool()
             skip_n = int(attention_mask.size(-1) / hidden_states.size(1))
             if skip_n <= 0:
@@ -188,6 +228,7 @@ class MuQLoRA(nn.Module):
         self,
         x,
         attention_mask: torch.Tensor | None = None,
+        input_type: str = "waveform",
         output_attentions: bool = False,
         output_hidden_states: bool = True,
         return_dict: bool = True,
@@ -196,10 +237,14 @@ class MuQLoRA(nn.Module):
         """Run the MuQ encoder without computing the original codebook logits.
 
         Args:
-            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
-                ``[batch_size, 1, timestep]``.
-            attention_mask: Optional waveform-level mask shaped
-                ``[batch_size, timestep]``.
+            x: Raw waveform for ``input_type="waveform"``, raw dB mel for
+                ``input_type="mel"``, or already-trimmed MuQ mel features for
+                ``input_type="muq_mel"``.
+            attention_mask: Optional waveform-level or mel-level mask.
+            input_type: ``"waveform"``, ``"mel"``, or ``"muq_mel"``. Raw mel
+                input must use MuQ's mel parameters:
+                ``sample_rate=24000``, ``n_fft=2048``, ``hop_length=240``,
+                ``n_mels=128``, ``is_db=True``.
 
         Returns:
             By default, a Conformer BaseModelOutput-like object whose
@@ -207,7 +252,11 @@ class MuQLoRA(nn.Module):
             If ``return_attention_mask=True``, returns
             ``(features, encoder_attention_mask)``.
         """
-        hidden_states, encoder_attention_mask = self.prepare_encoder_inputs(x, attention_mask)
+        hidden_states, encoder_attention_mask = self.prepare_encoder_inputs(
+            x,
+            attention_mask,
+            input_type=input_type,
+        )
         outputs = self.model.model.conformer(
             hidden_states,
             attention_mask=encoder_attention_mask,
@@ -259,6 +308,7 @@ class MuQLoRA(nn.Module):
         self,
         x,
         attention_mask: torch.Tensor | None = None,
+        input_type: str = "waveform",
         output_attentions: bool = False,
         output_hidden_states: bool | None = None,
         return_dict: bool = True,
@@ -268,10 +318,15 @@ class MuQLoRA(nn.Module):
         """Run feature extraction, multi-head prediction, or the original MuQ path.
 
         Args:
-            x: Raw audio waveform, shaped ``[batch_size, timestep]`` or
-                single-channel ``[batch_size, 1, timestep]``.
-            attention_mask: Optional waveform-level mask shaped
-                ``[batch_size, timestep]``.
+            x: Raw waveform shaped ``[batch_size, timestep]`` or
+                ``[batch_size, 1, timestep]`` when ``input_type="waveform"``.
+                Raw dB mel shaped ``[batch_size, 128, mel_frame_count]`` or
+                ``[batch_size, 1, 128, mel_frame_count]`` when
+                ``input_type="mel"``.
+            attention_mask: Optional waveform-level or mel-level mask.
+            input_type: ``"waveform"``, ``"mel"``, or ``"muq_mel"``. For
+                ``"mel"``, use ``sample_rate=24000``, ``n_fft=2048``,
+                ``hop_length=240``, ``n_mels=128``, ``is_db=True``.
             return_features: In multi-head mode, return
                 ``(task_outputs, encoder_features)`` instead of only
                 ``task_outputs``.
@@ -289,6 +344,7 @@ class MuQLoRA(nn.Module):
             features, encoder_attention_mask = self.encode(
                 x,
                 attention_mask=attention_mask,
+                input_type=input_type,
                 output_attentions=output_attentions,
                 output_hidden_states=False if output_hidden_states is None else output_hidden_states,
                 return_dict=return_dict,
@@ -308,6 +364,7 @@ class MuQLoRA(nn.Module):
             return self.encode(
                 x,
                 attention_mask=attention_mask,
+                input_type=input_type,
                 output_attentions=output_attentions,
                 output_hidden_states=True if output_hidden_states is None else output_hidden_states,
                 return_dict=return_dict,
@@ -318,4 +375,6 @@ class MuQLoRA(nn.Module):
             kwargs["output_hidden_states"] = output_hidden_states
         if attention_mask is not None:
             kwargs["attention_mask"] = attention_mask
+        if input_type != "waveform":
+            raise ValueError("non-waveform input requires feature_only=True or heads")
         return self.model(x, **kwargs)

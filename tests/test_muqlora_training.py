@@ -18,9 +18,9 @@ def train_task_for_steps(
     steps: int = 2,
     **forward_kwargs,
 ):
-    optimizer = torch.optim.SGD(
+    optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
-        lr=0.05,
+        lr=0.01,
     )
 
     for _ in range(steps):
@@ -30,6 +30,8 @@ def train_task_for_steps(
         loss.backward()
         optimizer.step()
 
+    return optimizer
+
 
 class MuQLoRAIntegrationTest(unittest.TestCase):
     @classmethod
@@ -38,6 +40,9 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         cls.base = muq.MuQ.from_pretrained(MODEL_ID)
 
     def test_multitask_steps_update_only_lora_and_task_head(self):
+        with self.assertRaisesRegex(ValueError, "train_muq_head"):
+            MuQLoRA(self.base, train_muq_head=True)
+
         model = MuQLoRA(
             self.base,
             heads={"genre": nn.Linear(self.base.config.encoder_dim, 4)},
@@ -59,6 +64,7 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         wrapped_conv = lora_conv_modules[0]
 
         self.assertIsInstance(model.model.model.linear, nn.Identity)
+        model.assert_dtype_policy()
 
         wrapped_linear_weight_before = wrapped_linear.module.weight.detach().clone()
         wrapped_linear_bias_before = wrapped_linear.module.bias.detach().clone()
@@ -74,11 +80,28 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         self.assertTrue(wrapped_linear.lora_A.training)
         self.assertTrue(wrapped_linear.lora_B.training)
         self.assertFalse(wrapped_linear.module.weight.requires_grad)
+        self.assertEqual(wrapped_linear.module.weight.dtype, torch.bfloat16)
+        self.assertEqual(wrapped_linear.lora_A.weight.dtype, torch.float32)
+        self.assertEqual(wrapped_linear.lora_B.weight.dtype, torch.float32)
         self.assertTrue(wrapped_conv.training)
         self.assertFalse(wrapped_conv.module.training)
         self.assertTrue(wrapped_conv.lora_A.training)
         self.assertTrue(wrapped_conv.lora_B.training)
         self.assertFalse(wrapped_conv.module.weight.requires_grad)
+        self.assertEqual(wrapped_conv.module.weight.dtype, torch.bfloat16)
+        self.assertEqual(wrapped_conv.lora_A.weight.dtype, torch.float32)
+        self.assertEqual(wrapped_conv.lora_B.weight.dtype, torch.float32)
+        self.assertEqual(model.heads["genre"].weight.dtype, torch.float32)
+
+        norm_tensors = []
+        for module in model.model.modules():
+            if isinstance(module, (nn.LayerNorm, nn.GroupNorm, nn.modules.batchnorm._BatchNorm)):
+                norm_tensors.extend(module.parameters(recurse=False))
+                norm_tensors.extend(module.buffers(recurse=False))
+        self.assertTrue(norm_tensors)
+        self.assertTrue(
+            all(not tensor.is_floating_point() or tensor.dtype == torch.float32 for tensor in norm_tensors)
+        )
 
         self.assertEqual(
             MUQ_MEL_INPUT_CONFIG,
@@ -96,8 +119,29 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         # Raw MuQ mel input: [batch_size, n_mels=128, mel_frame_count].
         mel = model.model.model.preprocessor_melspec_2048(waveform.float())
 
-        waveform_output, waveform_features = model(waveform, return_features=True)
-        mel_output, mel_features = model(mel, input_type="mel", return_features=True)
+        adapter_io_dtypes = []
+
+        def capture_adapter_io(_module, inputs, output):
+            adapter_io_dtypes.append((inputs[0].dtype, output.dtype))
+
+        linear_hook = wrapped_linear.lora_A.register_forward_hook(capture_adapter_io)
+        conv_hook = wrapped_conv.lora_A.register_forward_hook(capture_adapter_io)
+        try:
+            waveform_output, waveform_features = model(waveform, return_features=True)
+            mel_output, mel_features = model(mel, input_type="mel", return_features=True)
+        finally:
+            linear_hook.remove()
+            conv_hook.remove()
+
+        self.assertTrue(adapter_io_dtypes)
+        self.assertTrue(
+            all(input_dtype == torch.bfloat16 and output_dtype == torch.bfloat16
+                for input_dtype, output_dtype in adapter_io_dtypes)
+        )
+        self.assertEqual(waveform_features.last_hidden_state.dtype, torch.bfloat16)
+        self.assertEqual(mel_features.last_hidden_state.dtype, torch.bfloat16)
+        self.assertEqual(waveform_output["genre"].dtype, torch.float32)
+        self.assertEqual(mel_output["genre"].dtype, torch.float32)
         torch.testing.assert_close(
             mel_features.last_hidden_state,
             waveform_features.last_hidden_state,
@@ -105,7 +149,7 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         torch.testing.assert_close(mel_output["genre"], waveform_output["genre"])
 
         target = torch.randn(1, 4)
-        train_task_for_steps(model, "genre", mel, target, input_type="mel")
+        optimizer = train_task_for_steps(model, "genre", mel, target, input_type="mel")
 
         self.assertTrue(
             torch.equal(wrapped_linear.module.weight.detach(), wrapped_linear_weight_before)
@@ -120,6 +164,15 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         self.assertIsNone(wrapped_linear.module.weight.grad)
         self.assertIsNone(wrapped_linear.module.bias.grad)
         self.assertIsNone(wrapped_conv.module.weight.grad)
+        for parameter in (
+            wrapped_linear.lora_A.weight,
+            wrapped_linear.lora_B.weight,
+            wrapped_conv.lora_A.weight,
+            wrapped_conv.lora_B.weight,
+            model.heads["genre"].weight,
+        ):
+            self.assertEqual(optimizer.state[parameter]["exp_avg"].dtype, torch.float32)
+            self.assertEqual(optimizer.state[parameter]["exp_avg_sq"].dtype, torch.float32)
 
 
 if __name__ == "__main__":

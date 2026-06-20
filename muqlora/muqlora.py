@@ -1,5 +1,6 @@
 import math
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 
 import torch
 from torch import nn
@@ -16,8 +17,29 @@ MUQ_MEL_INPUT_CONFIG = {
 }
 
 
+_NORM_MODULE_TYPES = (nn.LayerNorm, nn.GroupNorm, nn.modules.batchnorm._BatchNorm)
+_AUTOCAST_DTYPES = (torch.float16, torch.bfloat16)
+
+
+def _autocast_for(x: torch.Tensor, dtype: torch.dtype):
+    """Return an autocast context for reduced-precision adapter compute."""
+    if dtype not in _AUTOCAST_DTYPES:
+        return nullcontext()
+    return torch.autocast(device_type=x.device.type, dtype=dtype)
+
+
+def _floating_dtype(dtype: torch.dtype) -> bool:
+    return torch.empty((), dtype=dtype).is_floating_point()
+
+
 class LoRALinear(nn.Module):
-    def __init__(self, module: nn.Linear, r: int = 8, alpha: float = 16):
+    def __init__(
+        self,
+        module: nn.Linear,
+        r: int = 8,
+        alpha: float = 16,
+        compute_dtype: torch.dtype | None = None,
+    ):
         super().__init__()
 
         self.module = module
@@ -26,6 +48,7 @@ class LoRALinear(nn.Module):
         self.r = r
         self.alpha = alpha
         self.scaling = alpha / r
+        self.compute_dtype = module.weight.dtype if compute_dtype is None else compute_dtype
 
         self.module.requires_grad_(False)
 
@@ -42,7 +65,10 @@ class LoRALinear(nn.Module):
         self.lora_B.requires_grad_(True)
 
     def forward(self, x):
-        return self.module(x) + self.lora_B(self.lora_A(x)) * self.scaling
+        base_output = self.module(x)
+        with _autocast_for(x, self.compute_dtype):
+            lora_output = self.lora_B(self.lora_A(x)) * self.scaling
+        return base_output + lora_output.to(dtype=base_output.dtype)
 
     def train(self, mode: bool = True):
         self.training = mode
@@ -61,7 +87,13 @@ class LoRAConv1d(nn.Module):
     ``kernel_size=1``.
     """
 
-    def __init__(self, module: nn.Conv1d, r: int = 8, alpha: float = 16):
+    def __init__(
+        self,
+        module: nn.Conv1d,
+        r: int = 8,
+        alpha: float = 16,
+        compute_dtype: torch.dtype | None = None,
+    ):
         super().__init__()
 
         if module.kernel_size != (1,):
@@ -75,6 +107,7 @@ class LoRAConv1d(nn.Module):
         self.r = r
         self.alpha = alpha
         self.scaling = alpha / r
+        self.compute_dtype = module.weight.dtype if compute_dtype is None else compute_dtype
 
         self.module.requires_grad_(False)
 
@@ -99,7 +132,10 @@ class LoRAConv1d(nn.Module):
         self.lora_B.requires_grad_(True)
 
     def forward(self, x):
-        return self.module(x) + self.lora_B(self.lora_A(x)) * self.scaling
+        base_output = self.module(x)
+        with _autocast_for(x, self.compute_dtype):
+            lora_output = self.lora_B(self.lora_A(x)) * self.scaling
+        return base_output + lora_output.to(dtype=base_output.dtype)
 
     def train(self, mode: bool = True):
         self.training = mode
@@ -139,6 +175,13 @@ class MuQLoRA(nn.Module):
         or ``"cls"``, each head receives ``[batch_size, hidden_size]``.
         With ``pooling="none"``, each head receives
         ``[batch_size, frame_count, hidden_size]``.
+
+    Precision policy:
+        Frozen MuQ weights use ``base_dtype``. With ``keep_norm_fp32=True``,
+        LayerNorm, BatchNorm, and GroupNorm parameters and buffers remain
+        FP32. LoRA A/B and optional task-head parameters use
+        ``adapter_dtype`` storage, while their matmuls execute under local
+        autocast at ``base_dtype``.
     """
 
     def __init__(
@@ -154,6 +197,9 @@ class MuQLoRA(nn.Module):
         heads: Mapping[str, nn.Module] | nn.ModuleDict | None = None,
         pooling: str | None = "mean",
         drop_muq_head: bool | None = None,
+        base_dtype: torch.dtype = torch.bfloat16,
+        adapter_dtype: torch.dtype = torch.float32,
+        keep_norm_fp32: bool = True,
     ):
         super().__init__()
 
@@ -161,14 +207,18 @@ class MuQLoRA(nn.Module):
             raise ValueError("r must be positive")
         if num_target_layers < 0:
             raise ValueError("num_target_layers must be non-negative")
-        if train_muq_head and drop_muq_head:
-            raise ValueError("train_muq_head and drop_muq_head cannot both be enabled")
+        if train_muq_head:
+            raise ValueError(
+                "train_muq_head is not supported; use feature_only=True with task heads instead"
+            )
         if heads is not None and not heads:
             raise ValueError("heads must contain at least one task head")
-        if heads is not None and train_muq_head:
-            raise ValueError("heads and train_muq_head cannot both be enabled")
         if heads is not None and feature_only is False:
             raise ValueError("heads require feature_only=True")
+        if base_dtype not in (torch.float32, torch.float16, torch.bfloat16):
+            raise ValueError("base_dtype must be torch.float32, torch.float16, or torch.bfloat16")
+        if not _floating_dtype(adapter_dtype):
+            raise ValueError("adapter_dtype must be a floating-point torch dtype")
 
         self.model = model
         self.model.requires_grad_(False)  # Freeze the original model parameters before injecting LoRA.
@@ -177,16 +227,16 @@ class MuQLoRA(nn.Module):
         self.alpha = alpha
         self.target_modules = tuple(target_modules or ())
         self.num_target_layers = num_target_layers
-        self.train_muq_head = train_muq_head
         self.keep_base_model_eval = keep_base_model_eval
+        self.base_dtype = base_dtype
+        self.adapter_dtype = adapter_dtype
+        self.keep_norm_fp32 = keep_norm_fp32
         self.heads = None if heads is None else (
             heads if isinstance(heads, nn.ModuleDict) else nn.ModuleDict(heads)
         )
         self.pooling = pooling
-        self.feature_only = self.heads is not None or (
-            not train_muq_head if feature_only is None else feature_only
-        )
-        self.drop_muq_head = self.heads is not None if drop_muq_head is None else drop_muq_head
+        self.feature_only = self.heads is not None or (True if feature_only is None else feature_only)
+        self.drop_muq_head = self.feature_only if drop_muq_head is None else drop_muq_head
         if self.drop_muq_head and not self.feature_only:
             raise ValueError("drop_muq_head requires feature_only=True")
 
@@ -201,9 +251,9 @@ class MuQLoRA(nn.Module):
                 for name, module in layer.named_modules():
                     if name.split(".")[-1] in self.target_modules:
                         if isinstance(module, nn.Linear):
-                            module = LoRALinear(module, r, alpha)
+                            module = LoRALinear(module, r, alpha, compute_dtype=base_dtype)
                         elif isinstance(module, nn.Conv1d):
-                            module = LoRAConv1d(module, r, alpha)
+                            module = LoRAConv1d(module, r, alpha, compute_dtype=base_dtype)
                         else:
                             raise TypeError(
                                 f"target module {name!r} is not nn.Linear or nn.Conv1d"
@@ -217,13 +267,85 @@ class MuQLoRA(nn.Module):
 
                 layer_count -= 1
 
-        if train_muq_head:
-            with torch.no_grad():
-                nn.init.trunc_normal_(self.model.model.linear.weight, std=0.02)
-                nn.init.zeros_(self.model.model.linear.bias)
-
+        self._apply_precision_policy()
+        self.assert_dtype_policy()
         self.train()
-        self.model.model.linear.requires_grad_(train_muq_head)
+
+    def _apply_precision_policy(self):
+        """Place frozen MuQ, norms, adapters, and optional heads in their target dtypes."""
+        self.model.to(dtype=self.base_dtype)
+
+        if self.keep_norm_fp32:
+            for module in self.model.modules():
+                if isinstance(module, _NORM_MODULE_TYPES):
+                    module.to(dtype=torch.float32)
+
+        for module in self.model.modules():
+            if isinstance(module, (LoRALinear, LoRAConv1d)):
+                module.compute_dtype = self.base_dtype
+                module.lora_A.to(dtype=self.adapter_dtype)
+                module.lora_B.to(dtype=self.adapter_dtype)
+
+        if self.heads is not None:
+            self.heads.to(dtype=self.adapter_dtype)
+
+    @staticmethod
+    def _assert_tensor_dtype(
+        tensor: torch.Tensor,
+        expected_dtype: torch.dtype,
+        description: str,
+    ):
+        if tensor.is_floating_point() and tensor.dtype != expected_dtype:
+            raise AssertionError(
+                f"{description} has dtype {tensor.dtype}, expected {expected_dtype}"
+            )
+
+    def assert_dtype_policy(self):
+        """Raise ``AssertionError`` when the configured precision policy is violated."""
+        adapter_parameter_ids = set()
+        norm_parameter_ids = set()
+        norm_buffer_ids = set()
+
+        for module in self.model.modules():
+            if isinstance(module, (LoRALinear, LoRAConv1d)):
+                if module.compute_dtype != self.base_dtype:
+                    raise AssertionError(
+                        f"{module.__class__.__name__} compute dtype is {module.compute_dtype}, "
+                        f"expected {self.base_dtype}"
+                    )
+                for parameter in module.lora_A.parameters():
+                    adapter_parameter_ids.add(id(parameter))
+                for parameter in module.lora_B.parameters():
+                    adapter_parameter_ids.add(id(parameter))
+            if self.keep_norm_fp32 and isinstance(module, _NORM_MODULE_TYPES):
+                for parameter in module.parameters(recurse=False):
+                    norm_parameter_ids.add(id(parameter))
+                for buffer in module.buffers(recurse=False):
+                    norm_buffer_ids.add(id(buffer))
+
+        for name, parameter in self.model.named_parameters():
+            if id(parameter) in adapter_parameter_ids:
+                self._assert_tensor_dtype(parameter, self.adapter_dtype, f"LoRA parameter {name}")
+                if not parameter.requires_grad:
+                    raise AssertionError(f"LoRA parameter {name} must require gradients")
+                continue
+
+            expected_dtype = (
+                torch.float32 if id(parameter) in norm_parameter_ids else self.base_dtype
+            )
+            self._assert_tensor_dtype(parameter, expected_dtype, f"frozen base parameter {name}")
+            if parameter.requires_grad:
+                raise AssertionError(f"frozen base parameter {name} must not require gradients")
+
+        for name, buffer in self.model.named_buffers():
+            expected_dtype = torch.float32 if id(buffer) in norm_buffer_ids else self.base_dtype
+            self._assert_tensor_dtype(buffer, expected_dtype, f"base buffer {name}")
+
+        if self.heads is not None:
+            for name, parameter in self.heads.named_parameters():
+                self._assert_tensor_dtype(parameter, self.adapter_dtype, f"task-head parameter {name}")
+                if not parameter.requires_grad:
+                    raise AssertionError(f"task-head parameter {name} must require gradients")
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -273,7 +395,8 @@ class MuQLoRA(nn.Module):
             raise ValueError(f"unsupported input_type: {input_type!r}")
 
         features = muq_model.normalize(features)
-        hidden_states = muq_model.conv(features["melspec_2048"])
+        mel_features = features["melspec_2048"].to(dtype=self.base_dtype)
+        hidden_states = muq_model.conv(mel_features)
 
         if attention_mask is not None:
             if input_type == "mel":
@@ -417,7 +540,11 @@ class MuQLoRA(nn.Module):
                 features.last_hidden_state if hasattr(features, "last_hidden_state") else features[0]
             )
             head_input = self.pool_hidden_states(last_hidden_state, encoder_attention_mask)
-            outputs = {name: head(head_input) for name, head in self.heads.items()}
+            with _autocast_for(head_input, self.base_dtype):
+                outputs = {name: head(head_input) for name, head in self.heads.items()}
+            outputs = {
+                name: output.to(dtype=self.adapter_dtype) for name, output in outputs.items()
+            }
 
             if return_features:
                 return outputs, features
@@ -434,10 +561,17 @@ class MuQLoRA(nn.Module):
                 **kwargs,
             )
 
-        if output_hidden_states is not None:
-            kwargs["output_hidden_states"] = output_hidden_states
-        if attention_mask is not None:
-            kwargs["attention_mask"] = attention_mask
         if input_type != "waveform":
             raise ValueError("non-waveform input requires feature_only=True or heads")
-        return self.model(x, **kwargs)
+
+        # MuQ's public forward discards its codebook logits and returns encoder
+        # features. Route through the dtype-aware encoder path so BF16 base
+        # weights also work for explicit non-feature-only calls.
+        return self.encode(
+            x,
+            attention_mask=attention_mask,
+            input_type=input_type,
+            output_attentions=output_attentions,
+            output_hidden_states=True if output_hidden_states is None else output_hidden_states,
+            return_dict=return_dict,
+        )

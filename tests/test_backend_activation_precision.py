@@ -54,15 +54,29 @@ def build_neutral_wrapper(
     return wrapper.to(device).eval()
 
 
-def capture_frontend_activations(model: MuQLoRA):
-    """Capture the Conv2dSubsampling leaf activations for one forward pass."""
+def tensor_outputs(value, suffix=""):
+    """Yield every tensor from a module output with a stable output suffix."""
+    if isinstance(value, torch.Tensor):
+        yield suffix, value
+    elif isinstance(value, (tuple, list)):
+        for index, item in enumerate(value):
+            yield from tensor_outputs(item, f"{suffix}[{index}]")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from tensor_outputs(item, f"{suffix}[{key!r}]")
+
+
+def capture_leaf_activations(model: MuQLoRA):
+    """Capture every tensor output from every MuQModel leaf module."""
     activations = {}
     hooks = []
-    for name, module in model.model.model.conv.named_modules():
+    for name, module in model.model.model.named_modules():
         if name and not any(module.children()):
             def capture(_module, _inputs, output, name=name):
-                if isinstance(output, torch.Tensor):
-                    activations[name] = output.detach().float().cpu()
+                for suffix, tensor in tensor_outputs(output):
+                    activations.setdefault(f"{name}{suffix}", []).append(
+                        tensor.detach().float().cpu()
+                    )
 
             hooks.append(module.register_forward_hook(capture))
     return activations, hooks
@@ -102,13 +116,16 @@ def compare_activation(
 
 
 class BackendActivationPrecisionTest(unittest.TestCase):
-    def test_bf16_activations_match_fp32_for_every_conformer_layer(self):
+    def test_fp16_activations_match_fp32_for_every_conformer_layer(self):
         devices = available_accelerator_devices()
         if not devices:
             self.skipTest("requires an available CUDA or MPS backend")
 
-        # A deterministic one-second waveform keeps eval-mode activations stable.
-        waveform = torch.linspace(-0.5, 0.5, 24_000).unsqueeze(0)
+        # A deterministic one-second A4 tone is closer to the model's audio
+        # domain than a linear ramp while remaining exactly reproducible.
+        sample_rate = 24_000
+        frame = torch.arange(sample_rate, dtype=torch.float32) / sample_rate
+        waveform = (0.5 * torch.sin(2 * torch.pi * 440 * frame)).unsqueeze(0)
 
         for device in devices:
             with self.subTest(device=device.type):
@@ -118,11 +135,11 @@ class BackendActivationPrecisionTest(unittest.TestCase):
                     muq.MuQ.from_pretrained(MODEL_ID), device, torch.float32
                 )
                 candidate = build_neutral_wrapper(
-                    muq.MuQ.from_pretrained(MODEL_ID), device, torch.bfloat16
+                    muq.MuQ.from_pretrained(MODEL_ID), device, torch.float16
                 )
 
-                reference_frontend, reference_hooks = capture_frontend_activations(reference)
-                candidate_frontend, candidate_hooks = capture_frontend_activations(candidate)
+                reference_leaves, reference_hooks = capture_leaf_activations(reference)
+                candidate_leaves, candidate_hooks = capture_leaf_activations(candidate)
                 try:
                     with torch.no_grad():
                         fp32_output = reference(
@@ -130,7 +147,7 @@ class BackendActivationPrecisionTest(unittest.TestCase):
                             input_type="waveform",
                             output_hidden_states=True,
                         )
-                        bf16_output = candidate(
+                        fp16_output = candidate(
                             waveform.to(device),
                             input_type="waveform",
                             output_hidden_states=True,
@@ -141,40 +158,50 @@ class BackendActivationPrecisionTest(unittest.TestCase):
 
                 self.assertEqual(
                     len(fp32_output.hidden_states),
-                    len(bf16_output.hidden_states),
+                    len(fp16_output.hidden_states),
                 )
                 self.assertEqual(
-                    reference_frontend.keys(),
-                    candidate_frontend.keys(),
+                    reference_leaves.keys(),
+                    candidate_leaves.keys(),
                 )
                 failures = []
-                for name, fp32_activation in reference_frontend.items():
-                    if not compare_activation(
-                        device.type,
-                        f"frontend.{name}",
-                        fp32_activation,
-                        candidate_frontend[name],
+                for name, fp32_activations in reference_leaves.items():
+                    reduced_activations = candidate_leaves[name]
+                    self.assertEqual(
+                        len(fp32_activations),
+                        len(reduced_activations),
+                        f"leaf invocation count differs for {name}",
+                    )
+                    for invocation, (fp32_activation, reduced_activation) in enumerate(
+                        zip(fp32_activations, reduced_activations)
                     ):
-                        failures.append(f"frontend.{name}")
+                        label = f"leaf.{name}#{invocation}"
+                        if not compare_activation(
+                            device.type,
+                            label,
+                            fp32_activation,
+                            reduced_activation,
+                        ):
+                            failures.append(label)
 
-                for layer_index, (fp32_activation, bf16_activation) in enumerate(
-                    zip(fp32_output.hidden_states, bf16_output.hidden_states)
+                for layer_index, (fp32_activation, fp16_activation) in enumerate(
+                    zip(fp32_output.hidden_states, fp16_output.hidden_states)
                 ):
                     if not compare_activation(
                         device.type,
                         f"conformer.{layer_index:02d}",
                         fp32_activation,
-                        bf16_activation,
+                        fp16_activation,
                     ):
                         failures.append(f"conformer.{layer_index:02d}")
 
                 self.assertFalse(
                     failures,
-                    f"BF16 activations diverged from FP32 on {device.type} at layers {failures}; "
+                    f"FP16 activations diverged from FP32 on {device.type} at layers {failures}; "
                     f"rtol={ACTIVATION_RTOL}, atol={ACTIVATION_ATOL}",
                 )
 
-                del bf16_output
+                del fp16_output
                 del fp32_output
                 del candidate
                 del reference

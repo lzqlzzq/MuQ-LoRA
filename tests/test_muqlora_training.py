@@ -80,7 +80,7 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         self.assertTrue(wrapped_linear.lora_A.training)
         self.assertTrue(wrapped_linear.lora_B.training)
         self.assertFalse(wrapped_linear.module.weight.requires_grad)
-        self.assertEqual(wrapped_linear.module.weight.dtype, torch.bfloat16)
+        self.assertEqual(wrapped_linear.module.weight.dtype, torch.float16)
         self.assertEqual(wrapped_linear.lora_A.weight.dtype, torch.float32)
         self.assertEqual(wrapped_linear.lora_B.weight.dtype, torch.float32)
         self.assertTrue(wrapped_conv.training)
@@ -88,7 +88,7 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
         self.assertTrue(wrapped_conv.lora_A.training)
         self.assertTrue(wrapped_conv.lora_B.training)
         self.assertFalse(wrapped_conv.module.weight.requires_grad)
-        self.assertEqual(wrapped_conv.module.weight.dtype, torch.bfloat16)
+        self.assertEqual(wrapped_conv.module.weight.dtype, torch.float16)
         self.assertEqual(wrapped_conv.lora_A.weight.dtype, torch.float32)
         self.assertEqual(wrapped_conv.lora_B.weight.dtype, torch.float32)
         self.assertEqual(model.heads["genre"].weight.dtype, torch.float32)
@@ -135,11 +135,11 @@ class MuQLoRAIntegrationTest(unittest.TestCase):
 
         self.assertTrue(adapter_io_dtypes)
         self.assertTrue(
-            all(input_dtype == torch.bfloat16 and output_dtype == torch.bfloat16
+            all(input_dtype == torch.float16 and output_dtype == torch.float16
                 for input_dtype, output_dtype in adapter_io_dtypes)
         )
-        self.assertEqual(waveform_features.last_hidden_state.dtype, torch.bfloat16)
-        self.assertEqual(mel_features.last_hidden_state.dtype, torch.bfloat16)
+        self.assertEqual(waveform_features.last_hidden_state.dtype, torch.float16)
+        self.assertEqual(mel_features.last_hidden_state.dtype, torch.float16)
         self.assertEqual(waveform_output["genre"].dtype, torch.float32)
         self.assertEqual(mel_output["genre"].dtype, torch.float32)
         torch.testing.assert_close(

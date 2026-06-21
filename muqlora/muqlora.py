@@ -18,18 +18,14 @@ MUQ_MEL_INPUT_CONFIG = {
 
 
 _NORM_MODULE_TYPES = (nn.LayerNorm, nn.GroupNorm, nn.modules.batchnorm._BatchNorm)
-_AUTOCAST_DTYPES = (torch.float16, torch.bfloat16)
+_REDUCED_BASE_DTYPES = (torch.float16,)
 
 
 def _autocast_for(x: torch.Tensor, dtype: torch.dtype):
     """Return an autocast context for reduced-precision adapter compute."""
-    if dtype not in _AUTOCAST_DTYPES:
+    if dtype not in _REDUCED_BASE_DTYPES:
         return nullcontext()
     return torch.autocast(device_type=x.device.type, dtype=dtype)
-
-
-def _floating_dtype(dtype: torch.dtype) -> bool:
-    return torch.empty((), dtype=dtype).is_floating_point()
 
 
 class LoRALinear(nn.Module):
@@ -187,9 +183,9 @@ class MuQLoRA(nn.Module):
         convolutional frontend in FP32, then casts its output once before the
         Conformer encoder. This keeps the frontend BatchNorm running statistics
         in FP32, which avoids amplifying reduced-precision convolution
-        rounding. On MPS, FP32 normalization receives an FP32 activation via
-        an internal input/output bridge; CUDA uses the same public precision
-        policy without this bridge.
+        rounding. FP32 normalization receives an FP32 activation through an
+        internal input/output bridge whenever its caller uses FP16, on every
+        backend.
     """
 
     def __init__(
@@ -205,7 +201,7 @@ class MuQLoRA(nn.Module):
         heads: Mapping[str, nn.Module] | nn.ModuleDict | None = None,
         pooling: str | None = "mean",
         drop_muq_head: bool | None = None,
-        base_dtype: torch.dtype = torch.bfloat16,
+        base_dtype: torch.dtype = torch.float16,
         adapter_dtype: torch.dtype = torch.float32,
         keep_norm_fp32: bool = True,
         runtime_device: torch.device | str | None = None,
@@ -224,10 +220,10 @@ class MuQLoRA(nn.Module):
             raise ValueError("heads must contain at least one task head")
         if heads is not None and feature_only is False:
             raise ValueError("heads require feature_only=True")
-        if base_dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError("base_dtype must be torch.float32, torch.float16, or torch.bfloat16")
-        if not _floating_dtype(adapter_dtype):
-            raise ValueError("adapter_dtype must be a floating-point torch dtype")
+        if base_dtype not in (torch.float32, torch.float16):
+            raise ValueError("base_dtype must be torch.float32 or torch.float16; BF16 is unsupported")
+        if adapter_dtype != torch.float32:
+            raise ValueError("adapter_dtype must be torch.float32")
 
         self.model = model
         self.model.requires_grad_(False)  # Freeze the original model parameters before injecting LoRA.
@@ -312,7 +308,7 @@ class MuQLoRA(nn.Module):
     ) -> torch.dtype:
         """Keep MuQ's convolutional frontend in FP32 for reduced-precision bases."""
         del runtime_device  # Frontend fidelity is backend-independent.
-        return torch.float32 if base_dtype in _AUTOCAST_DTYPES else base_dtype
+        return torch.float32 if base_dtype in _REDUCED_BASE_DTYPES else base_dtype
 
     def _apply_precision_policy(self):
         """Place frozen MuQ, norms, adapters, and optional heads in their target dtypes."""
@@ -685,7 +681,7 @@ class MuQLoRA(nn.Module):
             raise ValueError("non-waveform input requires feature_only=True or heads")
 
         # MuQ's public forward discards its codebook logits and returns encoder
-        # features. Route through the dtype-aware encoder path so BF16 base
+        # features. Route through the dtype-aware encoder path so FP16 base
         # weights also work for explicit non-feature-only calls.
         return self.encode(
             x,

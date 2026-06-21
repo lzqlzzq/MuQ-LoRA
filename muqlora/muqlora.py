@@ -1,5 +1,4 @@
 import math
-import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 
@@ -188,9 +187,9 @@ class MuQLoRA(nn.Module):
         convolutional frontend in FP32, then casts its output once before the
         Conformer encoder. This keeps the frontend BatchNorm running statistics
         in FP32, which avoids amplifying reduced-precision convolution
-        rounding. MPSGraph still requires the Conformer
-        normalization modules to use dtypes compatible with their activations,
-        whereas CUDA can safely retain FP32 norms.
+        rounding. On MPS, FP32 normalization receives an FP32 activation via
+        an internal input/output bridge; CUDA uses the same public precision
+        policy without this bridge.
     """
 
     def __init__(
@@ -250,6 +249,7 @@ class MuQLoRA(nn.Module):
             base_dtype=base_dtype,
             runtime_device=self.runtime_device,
         )
+        self._norm_precision_hook_handles = []
         self.heads = None if heads is None else (
             heads if isinstance(heads, nn.ModuleDict) else nn.ModuleDict(heads)
         )
@@ -288,6 +288,7 @@ class MuQLoRA(nn.Module):
 
         self._apply_precision_policy()
         self.assert_dtype_policy()
+        self._install_norm_precision_hooks()
         self.train()
 
     @staticmethod
@@ -296,19 +297,12 @@ class MuQLoRA(nn.Module):
         keep_norm_fp32: bool,
         runtime_device: torch.device | str | None,
     ) -> bool:
-        """Resolve the normalization dtype policy for an intended runtime device."""
-        if runtime_device is None:
-            return keep_norm_fp32
+        """Preserve the caller's norm policy on every backend.
 
-        device_type = torch.device(runtime_device).type
-        if device_type == "mps" and base_dtype in _AUTOCAST_DTYPES and keep_norm_fp32:
-            warnings.warn(
-                "MPSGraph normalization does not support reduced-precision activations "
-                "with FP32 normalization statistics; disabling keep_norm_fp32 for MPS.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            return False
+        MPS compatibility is implemented at norm call sites, rather than by
+        changing the meaning of ``keep_norm_fp32``.
+        """
+        del base_dtype, runtime_device
         return keep_norm_fp32
 
     @staticmethod
@@ -364,6 +358,48 @@ class MuQLoRA(nn.Module):
 
         if self.heads is not None:
             self.heads.to(dtype=self.adapter_dtype)
+
+    def _install_norm_precision_hooks(self):
+        """Bridge reduced MPS activations through FP32 normalization modules.
+
+        MPSGraph rejects reduced-precision activations with FP32 norm state.
+        The hooks preserve the backend-neutral ``keep_norm_fp32`` contract by
+        upcasting only MPS norm inputs and restoring their original dtype on
+        output. CUDA and CPU inputs pass through unchanged.
+        """
+        if not self.keep_norm_fp32:
+            return
+
+        frontend_module_ids = {id(module) for module in self.model.model.conv.modules()}
+        for module in self.model.modules():
+            if id(module) in frontend_module_ids or not isinstance(module, _NORM_MODULE_TYPES):
+                continue
+
+            input_dtypes = []
+
+            def pre_hook(_module, inputs, input_dtypes=input_dtypes):
+                if not inputs or not isinstance(inputs[0], torch.Tensor):
+                    input_dtypes.append(None)
+                    return None
+                x = inputs[0]
+                if x.device.type == "mps" and x.is_floating_point() and x.dtype != torch.float32:
+                    input_dtypes.append(x.dtype)
+                    return (x.float(), *inputs[1:])
+                input_dtypes.append(None)
+                return None
+
+            def post_hook(_module, _inputs, output, input_dtypes=input_dtypes):
+                input_dtype = input_dtypes.pop()
+                if input_dtype is None or not isinstance(output, torch.Tensor):
+                    return output
+                return output.to(dtype=input_dtype)
+
+            self._norm_precision_hook_handles.extend(
+                (
+                    module.register_forward_pre_hook(pre_hook),
+                    module.register_forward_hook(post_hook),
+                )
+            )
 
     @staticmethod
     def _assert_tensor_dtype(

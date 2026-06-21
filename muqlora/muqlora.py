@@ -184,10 +184,13 @@ class MuQLoRA(nn.Module):
         ``adapter_dtype`` storage, while their matmuls execute under local
         autocast at ``base_dtype``.
 
-        When ``runtime_device="mps"`` and ``base_dtype`` is reduced precision,
-        MuQLoRA disables the FP32-norm policy with a warning. MPSGraph
-        normalization requires activation and normalization statistics to use
-        compatible dtypes, whereas CUDA can safely retain FP32 norms.
+        When ``base_dtype`` is reduced precision, MuQLoRA runs the complete
+        convolutional frontend in FP32, then casts its output once before the
+        Conformer encoder. This keeps the frontend BatchNorm running statistics
+        in FP32, which avoids amplifying reduced-precision convolution
+        rounding. MPSGraph still requires the Conformer
+        normalization modules to use dtypes compatible with their activations,
+        whereas CUDA can safely retain FP32 norms.
     """
 
     def __init__(
@@ -241,6 +244,10 @@ class MuQLoRA(nn.Module):
         self.keep_norm_fp32 = self.resolve_keep_norm_fp32(
             base_dtype=base_dtype,
             keep_norm_fp32=keep_norm_fp32,
+            runtime_device=self.runtime_device,
+        )
+        self.frontend_dtype = self.resolve_frontend_dtype(
+            base_dtype=base_dtype,
             runtime_device=self.runtime_device,
         )
         self.heads = None if heads is None else (
@@ -304,14 +311,50 @@ class MuQLoRA(nn.Module):
             return False
         return keep_norm_fp32
 
+    @staticmethod
+    def resolve_frontend_dtype(
+        base_dtype: torch.dtype,
+        runtime_device: torch.device | str | None,
+    ) -> torch.dtype:
+        """Keep MuQ's convolutional frontend in FP32 for reduced-precision bases."""
+        del runtime_device  # Frontend fidelity is backend-independent.
+        return torch.float32 if base_dtype in _AUTOCAST_DTYPES else base_dtype
+
     def _apply_precision_policy(self):
         """Place frozen MuQ, norms, adapters, and optional heads in their target dtypes."""
-        self.model.to(dtype=self.base_dtype)
+        frontend_tensor_ids = {
+            *(id(parameter) for parameter in self.model.model.conv.parameters()),
+            *(id(buffer) for buffer in self.model.model.conv.buffers()),
+        }
+
+        # Do not use self.model.to(base_dtype) here. It would round the
+        # frontend FP32 weights to the base dtype before converting them back,
+        # leaving an irreversible FP32 -> reduced -> FP32 weight error.
+        for module in self.model.modules():
+            for parameter in module.parameters(recurse=False):
+                if (
+                    parameter is not None
+                    and parameter.is_floating_point()
+                    and id(parameter) not in frontend_tensor_ids
+                ):
+                    parameter.data = parameter.data.to(dtype=self.base_dtype)
+            for name, buffer in module.named_buffers(recurse=False):
+                if (
+                    buffer is not None
+                    and buffer.is_floating_point()
+                    and id(buffer) not in frontend_tensor_ids
+                ):
+                    module._buffers[name] = buffer.to(dtype=self.base_dtype)
 
         if self.keep_norm_fp32:
             for module in self.model.modules():
                 if isinstance(module, _NORM_MODULE_TYPES):
                     module.to(dtype=torch.float32)
+
+        # The Conv2dSubsampling frontend contains BatchNorm2d layers with very
+        # small running variances. Reduced-precision convolution rounding is
+        # amplified there, so the complete frontend stays FP32 on every backend.
+        self.model.model.conv.to(dtype=self.frontend_dtype)
 
         for module in self.model.modules():
             if isinstance(module, (LoRALinear, LoRAConv1d)):
@@ -338,6 +381,12 @@ class MuQLoRA(nn.Module):
         adapter_parameter_ids = set()
         norm_parameter_ids = set()
         norm_buffer_ids = set()
+        frontend_parameter_ids = {
+            id(parameter) for parameter in self.model.model.conv.parameters()
+        }
+        frontend_buffer_ids = {
+            id(buffer) for buffer in self.model.model.conv.buffers()
+        }
 
         for module in self.model.modules():
             if isinstance(module, (LoRALinear, LoRAConv1d)):
@@ -363,7 +412,7 @@ class MuQLoRA(nn.Module):
                     raise AssertionError(f"LoRA parameter {name} must require gradients")
                 continue
 
-            expected_dtype = (
+            expected_dtype = self.frontend_dtype if id(parameter) in frontend_parameter_ids else (
                 torch.float32 if id(parameter) in norm_parameter_ids else self.base_dtype
             )
             self._assert_tensor_dtype(parameter, expected_dtype, f"frozen base parameter {name}")
@@ -371,7 +420,9 @@ class MuQLoRA(nn.Module):
                 raise AssertionError(f"frozen base parameter {name} must not require gradients")
 
         for name, buffer in self.model.named_buffers():
-            expected_dtype = torch.float32 if id(buffer) in norm_buffer_ids else self.base_dtype
+            expected_dtype = self.frontend_dtype if id(buffer) in frontend_buffer_ids else (
+                torch.float32 if id(buffer) in norm_buffer_ids else self.base_dtype
+            )
             self._assert_tensor_dtype(buffer, expected_dtype, f"base buffer {name}")
 
         if self.heads is not None:
@@ -428,8 +479,8 @@ class MuQLoRA(nn.Module):
             raise ValueError(f"unsupported input_type: {input_type!r}")
 
         features = muq_model.normalize(features)
-        mel_features = features["melspec_2048"].to(dtype=self.base_dtype)
-        hidden_states = muq_model.conv(mel_features)
+        mel_features = features["melspec_2048"].to(dtype=self.frontend_dtype)
+        hidden_states = muq_model.conv(mel_features).to(dtype=self.base_dtype)
 
         if attention_mask is not None:
             if input_type == "mel":

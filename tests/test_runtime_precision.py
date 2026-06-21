@@ -29,6 +29,24 @@ class RuntimePrecisionPolicyTest(unittest.TestCase):
             MuQLoRA.resolve_keep_norm_fp32(torch.float32, True, runtime_device="mps")
         )
 
+    def test_reduced_precision_keeps_frontend_fp32_on_every_backend(self):
+        self.assertEqual(
+            MuQLoRA.resolve_frontend_dtype(torch.bfloat16, runtime_device="mps"),
+            torch.float32,
+        )
+        self.assertEqual(
+            MuQLoRA.resolve_frontend_dtype(torch.float16, runtime_device="mps"),
+            torch.float32,
+        )
+        self.assertEqual(
+            MuQLoRA.resolve_frontend_dtype(torch.bfloat16, runtime_device="cuda"),
+            torch.float32,
+        )
+        self.assertEqual(
+            MuQLoRA.resolve_frontend_dtype(torch.bfloat16, runtime_device=None),
+            torch.float32,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

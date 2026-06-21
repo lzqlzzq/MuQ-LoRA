@@ -360,12 +360,12 @@ class MuQLoRA(nn.Module):
             self.heads.to(dtype=self.adapter_dtype)
 
     def _install_norm_precision_hooks(self):
-        """Bridge reduced MPS activations through FP32 normalization modules.
+        """Bridge reduced activations through FP32 normalization modules.
 
-        MPSGraph rejects reduced-precision activations with FP32 norm state.
-        The hooks preserve the backend-neutral ``keep_norm_fp32`` contract by
-        upcasting only MPS norm inputs and restoring their original dtype on
-        output. CUDA and CPU inputs pass through unchanged.
+        Normalization kernels require activation and FP32 norm-state dtypes to
+        agree. The hooks preserve the backend-neutral ``keep_norm_fp32``
+        contract by upcasting every reduced-precision norm input and restoring
+        its original dtype on output.
         """
         if not self.keep_norm_fp32:
             return
@@ -382,7 +382,7 @@ class MuQLoRA(nn.Module):
                     input_dtypes.append(None)
                     return None
                 x = inputs[0]
-                if x.device.type == "mps" and x.is_floating_point() and x.dtype != torch.float32:
+                if x.is_floating_point() and x.dtype != torch.float32:
                     input_dtypes.append(x.dtype)
                     return (x.float(), *inputs[1:])
                 input_dtypes.append(None)

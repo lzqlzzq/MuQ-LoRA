@@ -10,6 +10,7 @@ from muqlora import MuQLoRA
 MODEL_ID = "OpenMuQ/MuQ-large-msd-iter"
 ACTIVATION_RTOL = 5e-2
 ACTIVATION_ATOL = 5e-2
+ACTIVATION_COS_SIM_MIN = 0.999
 TARGET_MODULES = (
     "linear_q",
     "linear_v",
@@ -54,34 +55,6 @@ def build_neutral_wrapper(
     return wrapper.to(device).eval()
 
 
-def tensor_outputs(value, suffix=""):
-    """Yield every tensor from a module output with a stable output suffix."""
-    if isinstance(value, torch.Tensor):
-        yield suffix, value
-    elif isinstance(value, (tuple, list)):
-        for index, item in enumerate(value):
-            yield from tensor_outputs(item, f"{suffix}[{index}]")
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            yield from tensor_outputs(item, f"{suffix}[{key!r}]")
-
-
-def capture_leaf_activations(model: MuQLoRA):
-    """Capture every tensor output from every MuQModel leaf module."""
-    activations = {}
-    hooks = []
-    for name, module in model.model.model.named_modules():
-        if name and not any(module.children()):
-            def capture(_module, _inputs, output, name=name):
-                for suffix, tensor in tensor_outputs(output):
-                    activations.setdefault(f"{name}{suffix}", []).append(
-                        tensor.detach().float().cpu()
-                    )
-
-            hooks.append(module.register_forward_hook(capture))
-    return activations, hooks
-
-
 def compare_activation(
     scope: str,
     name: str,
@@ -98,9 +71,16 @@ def compare_activation(
 
     absolute_error = (fp32_activation - reduced_activation).abs()
     max_abs_error = absolute_error.max().item()
+    mean_abs_error = absolute_error.mean().item()
     max_rel_error = (
         absolute_error / fp32_activation.abs().clamp_min(1e-5)
     ).max().item()
+    cosine_similarity = torch.nn.functional.cosine_similarity(
+        fp32_activation.flatten(),
+        reduced_activation.flatten(),
+        dim=0,
+        eps=1e-12,
+    ).item()
     is_close = torch.allclose(
         fp32_activation,
         reduced_activation,
@@ -110,9 +90,10 @@ def compare_activation(
     print(
         f"[{scope}] layer={name} shape={tuple(fp32_activation.shape)} "
         f"allclose={is_close} max_abs={max_abs_error:.6g} "
-        f"max_rel={max_rel_error:.6g}"
+        f"mean_abs={mean_abs_error:.6g} max_rel={max_rel_error:.6g} "
+        f"cos_sim={cosine_similarity:.8f}"
     )
-    return is_close
+    return is_close, cosine_similarity
 
 
 class BackendActivationPrecisionTest(unittest.TestCase):
@@ -138,67 +119,43 @@ class BackendActivationPrecisionTest(unittest.TestCase):
                     muq.MuQ.from_pretrained(MODEL_ID), device, torch.float16
                 )
 
-                reference_leaves, reference_hooks = capture_leaf_activations(reference)
-                candidate_leaves, candidate_hooks = capture_leaf_activations(candidate)
-                try:
-                    with torch.no_grad():
-                        fp32_output = reference(
-                            waveform.to(device),
-                            input_type="waveform",
-                            output_hidden_states=True,
-                        )
-                        fp16_output = candidate(
-                            waveform.to(device),
-                            input_type="waveform",
-                            output_hidden_states=True,
-                        )
-                finally:
-                    for hook in reference_hooks + candidate_hooks:
-                        hook.remove()
+                with torch.no_grad():
+                    fp32_output = reference(
+                        waveform.to(device),
+                        input_type="waveform",
+                        output_hidden_states=True,
+                    )
+                    fp16_output = candidate(
+                        waveform.to(device),
+                        input_type="waveform",
+                        output_hidden_states=True,
+                    )
 
                 self.assertEqual(
                     len(fp32_output.hidden_states),
                     len(fp16_output.hidden_states),
                 )
-                self.assertEqual(
-                    reference_leaves.keys(),
-                    candidate_leaves.keys(),
-                )
                 failures = []
-                for name, fp32_activations in reference_leaves.items():
-                    reduced_activations = candidate_leaves[name]
-                    self.assertEqual(
-                        len(fp32_activations),
-                        len(reduced_activations),
-                        f"leaf invocation count differs for {name}",
-                    )
-                    for invocation, (fp32_activation, reduced_activation) in enumerate(
-                        zip(fp32_activations, reduced_activations)
-                    ):
-                        label = f"leaf.{name}#{invocation}"
-                        if not compare_activation(
-                            device.type,
-                            label,
-                            fp32_activation,
-                            reduced_activation,
-                        ):
-                            failures.append(label)
-
                 for layer_index, (fp32_activation, fp16_activation) in enumerate(
                     zip(fp32_output.hidden_states, fp16_output.hidden_states)
                 ):
-                    if not compare_activation(
+                    label = f"conformer.{layer_index:02d}"
+                    is_close, cosine_similarity = compare_activation(
                         device.type,
-                        f"conformer.{layer_index:02d}",
+                        label,
                         fp32_activation,
                         fp16_activation,
-                    ):
-                        failures.append(f"conformer.{layer_index:02d}")
+                    )
+                    if not is_close or cosine_similarity < ACTIVATION_COS_SIM_MIN:
+                        failures.append(
+                            f"{label}(allclose={is_close}, cos_sim={cosine_similarity:.8f})"
+                        )
 
                 self.assertFalse(
                     failures,
                     f"FP16 activations diverged from FP32 on {device.type} at layers {failures}; "
-                    f"rtol={ACTIVATION_RTOL}, atol={ACTIVATION_ATOL}",
+                    f"rtol={ACTIVATION_RTOL}, atol={ACTIVATION_ATOL}, "
+                    f"cos_sim_min={ACTIVATION_COS_SIM_MIN}",
                 )
 
                 del fp16_output

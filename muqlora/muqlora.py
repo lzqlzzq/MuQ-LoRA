@@ -1,4 +1,5 @@
 import math
+import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 
@@ -182,6 +183,11 @@ class MuQLoRA(nn.Module):
         FP32. LoRA A/B and optional task-head parameters use
         ``adapter_dtype`` storage, while their matmuls execute under local
         autocast at ``base_dtype``.
+
+        When ``runtime_device="mps"`` and ``base_dtype`` is reduced precision,
+        MuQLoRA disables the FP32-norm policy with a warning. MPSGraph
+        normalization requires activation and normalization statistics to use
+        compatible dtypes, whereas CUDA can safely retain FP32 norms.
     """
 
     def __init__(
@@ -200,6 +206,7 @@ class MuQLoRA(nn.Module):
         base_dtype: torch.dtype = torch.bfloat16,
         adapter_dtype: torch.dtype = torch.float32,
         keep_norm_fp32: bool = True,
+        runtime_device: torch.device | str | None = None,
     ):
         super().__init__()
 
@@ -230,7 +237,12 @@ class MuQLoRA(nn.Module):
         self.keep_base_model_eval = keep_base_model_eval
         self.base_dtype = base_dtype
         self.adapter_dtype = adapter_dtype
-        self.keep_norm_fp32 = keep_norm_fp32
+        self.runtime_device = None if runtime_device is None else torch.device(runtime_device)
+        self.keep_norm_fp32 = self.resolve_keep_norm_fp32(
+            base_dtype=base_dtype,
+            keep_norm_fp32=keep_norm_fp32,
+            runtime_device=self.runtime_device,
+        )
         self.heads = None if heads is None else (
             heads if isinstance(heads, nn.ModuleDict) else nn.ModuleDict(heads)
         )
@@ -270,6 +282,27 @@ class MuQLoRA(nn.Module):
         self._apply_precision_policy()
         self.assert_dtype_policy()
         self.train()
+
+    @staticmethod
+    def resolve_keep_norm_fp32(
+        base_dtype: torch.dtype,
+        keep_norm_fp32: bool,
+        runtime_device: torch.device | str | None,
+    ) -> bool:
+        """Resolve the normalization dtype policy for an intended runtime device."""
+        if runtime_device is None:
+            return keep_norm_fp32
+
+        device_type = torch.device(runtime_device).type
+        if device_type == "mps" and base_dtype in _AUTOCAST_DTYPES and keep_norm_fp32:
+            warnings.warn(
+                "MPSGraph normalization does not support reduced-precision activations "
+                "with FP32 normalization statistics; disabling keep_norm_fp32 for MPS.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return False
+        return keep_norm_fp32
 
     def _apply_precision_policy(self):
         """Place frozen MuQ, norms, adapters, and optional heads in their target dtypes."""

@@ -1,3 +1,15 @@
-from muqlora.muqlora import LoRAConv1d, LoRALinear, MUQ_MEL_INPUT_CONFIG, MuQLoRA
+from muqlora.muqlora import (
+    LoRAConv1d,
+    LoRALinear,
+    MUQ_MEL_INPUT_CONFIG,
+    MuQLoRA,
+    YaRNRotaryPositionalEmbedding,
+)
 
-__all__ = ["LoRAConv1d", "LoRALinear", "MUQ_MEL_INPUT_CONFIG", "MuQLoRA"]
+__all__ = [
+    "LoRAConv1d",
+    "LoRALinear",
+    "MUQ_MEL_INPUT_CONFIG",
+    "MuQLoRA",
+    "YaRNRotaryPositionalEmbedding",
+]

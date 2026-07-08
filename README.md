@@ -180,6 +180,15 @@ For LoRA-only training, replace the constant parameter term with:
 frozen_base_params * 2 bytes + trainable_lora_params * 16 bytes
 ```
 
+For interactive planning, open the static calculator:
+
+```text
+tools/memory_calculator.html
+```
+
+It lets you adjust batch size, sequence length, Flash vs non-Flash attention,
+LoRA target modules, rank, target layers, task heads, and the safety multiplier.
+
 ## Public API
 
 ```python

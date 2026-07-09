@@ -174,12 +174,19 @@ class YaRNRotaryPositionalEmbedding(nn.Module):
         self.cached_sequence_length = sequence_length
         self.cached_dtype = hidden_states.dtype
         self.cached_device = hidden_states.device
-        inv_freq = self.inv_freq.to(device=hidden_states.device, dtype=hidden_states.dtype)
-        time_stamps = torch.arange(sequence_length, device=hidden_states.device, dtype=hidden_states.dtype)
-        freqs = torch.einsum("i,j->ij", time_stamps, inv_freq)
-        embeddings = torch.cat((freqs, freqs), dim=-1)
+        with torch.autocast(device_type=hidden_states.device.type, enabled=False):
+            inv_freq = self.inv_freq.to(device=hidden_states.device, dtype=torch.float32)
+            time_stamps = torch.arange(
+                sequence_length,
+                device=hidden_states.device,
+                dtype=torch.float32,
+            )
+            freqs = torch.einsum("i,j->ij", time_stamps, inv_freq)
+            embeddings = torch.cat((freqs, freqs), dim=-1)
 
-        cos_embeddings = embeddings.cos()[:, None, None, :] * self.attention_factor
-        sin_embeddings = embeddings.sin()[:, None, None, :] * self.attention_factor
-        self.cached_rotary_positional_embedding = torch.stack([cos_embeddings, sin_embeddings])
+            cos_embeddings = embeddings.cos()[:, None, None, :] * self.attention_factor
+            sin_embeddings = embeddings.sin()[:, None, None, :] * self.attention_factor
+            rotary_positional_embedding = torch.stack([cos_embeddings, sin_embeddings])
+
+        self.cached_rotary_positional_embedding = rotary_positional_embedding.to(dtype=hidden_states.dtype)
         return self.cached_rotary_positional_embedding

@@ -47,6 +47,17 @@ class YaRNRotaryPositionalEmbeddingTest(unittest.TestCase):
         )
         self.assertEqual(positions[1, 0, 0, 0, 0].item(), 0.0)
 
+    def test_yarn_uses_fp32_math_under_outer_autocast(self):
+        config = self.build_config()
+        embedding = YaRNRotaryPositionalEmbedding(config, factor=4.0)
+        hidden_states = torch.zeros(2, 6, config.hidden_size, dtype=torch.float16)
+
+        with torch.autocast(device_type="cpu", dtype=torch.float16):
+            positions = embedding(hidden_states)
+
+        self.assertEqual(positions.dtype, hidden_states.dtype)
+        self.assertEqual(positions.shape, (2, 6, 1, 1, 8))
+
 
 if __name__ == "__main__":
     unittest.main()

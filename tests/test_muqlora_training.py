@@ -54,6 +54,27 @@ def train_task_for_steps(
     return optimizer
 
 
+def _gradient_spectral_norm(grad: torch.Tensor) -> float:
+    grad = grad.detach().float().cpu()
+    if grad.ndim == 0:
+        return float(grad.abs())
+    if grad.ndim == 1:
+        return float(torch.linalg.vector_norm(grad))
+    matrix = grad.reshape(grad.shape[0], -1)
+    return float(torch.linalg.matrix_norm(matrix, ord=2))
+
+
+def _print_gradient_spectral_norms(model: MuQLoRA) -> dict[str, float]:
+    spectral_norms = {}
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad or parameter.grad is None:
+            continue
+        value = _gradient_spectral_norm(parameter.grad)
+        spectral_norms[name] = value
+        print(f"grad_spectral_norm name={name} value={value:.8e}")
+    return spectral_norms
+
+
 def build_task_wrapper(base: muq.MuQ) -> MuQLoRA:
     return MuQLoRA(
         base,
@@ -189,6 +210,17 @@ class MuQLoRATrainingTest(unittest.TestCase):
 
         target = torch.randn(1, 4)
         optimizer = train_task_for_steps(model, "logits", mel, target, input_type="mel")
+        grad_spectral_norms = _print_gradient_spectral_norms(model)
+
+        self.assertTrue(grad_spectral_norms)
+        self.assertTrue(any(".lora_" in name for name in grad_spectral_norms))
+        self.assertTrue(any(name.startswith("task_head.") for name in grad_spectral_norms))
+        self.assertTrue(
+            all(
+                torch.isfinite(torch.tensor(value)) and value >= 0.0
+                for value in grad_spectral_norms.values()
+            )
+        )
 
         self.assertTrue(
             torch.equal(wrapped_linear.module.weight.detach(), wrapped_linear_weight_before)

@@ -1,4 +1,10 @@
+import json
+import warnings
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -21,8 +27,187 @@ MUQ_MEL_INPUT_CONFIG = {
     "is_db": True,
 }
 
+ADAPTER_CONFIG_NAME = "adapter_config.json"
+ADAPTER_WEIGHTS_NAME = "adapter_model.safetensors"
 
 _NORM_MODULE_TYPES = (nn.LayerNorm, nn.GroupNorm, nn.modules.batchnorm._BatchNorm)
+
+
+def _dtype_to_name(dtype: torch.dtype) -> str:
+    return str(dtype).removeprefix("torch.")
+
+
+def _class_path(module: nn.Module) -> str:
+    return f"{module.__class__.__module__}.{module.__class__.__qualname__}"
+
+
+def _require_safetensors():
+    try:
+        from safetensors.torch import load_file, save_file
+    except ImportError as exc:
+        raise RuntimeError(
+            "save_pretrained/load_adapter require the 'safetensors' package"
+        ) from exc
+    return load_file, save_file
+
+
+class MuQTaskHead(nn.Module, ABC):
+    """Base class for MuQLoRA task heads."""
+
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def head_type(self) -> str:
+        return _class_path(self)
+
+    def get_config(self) -> dict[str, Any]:
+        return {
+            "head_type": self.head_type,
+        }
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor) -> Mapping[str, torch.Tensor]:
+        """Return a TensorDict for this task."""
+
+
+@dataclass
+class MuQLoRAConfiguration:
+    format_version: int
+    base_model_name_or_path: str | None
+    target_modules: list[str]
+    num_target_layers: int
+    precision: dict[str, Any]
+    target_manifest: list[dict[str, Any]]
+    head_config: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format_version": self.format_version,
+            "base_model_name_or_path": self.base_model_name_or_path,
+            "target_modules": self.target_modules,
+            "num_target_layers": self.num_target_layers,
+            "precision": self.precision,
+            "target_manifest": self.target_manifest,
+            "head_config": self.head_config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "MuQLoRAConfiguration":
+        forbidden = sorted({"adapter_id", "adapter_name", "topology"} & set(data))
+        if forbidden:
+            raise ValueError(f"adapter_config.json contains unsupported fields: {forbidden}")
+        required = {
+            "format_version",
+            "base_model_name_or_path",
+            "target_modules",
+            "num_target_layers",
+            "precision",
+            "target_manifest",
+            "head_config",
+        }
+        missing = sorted(required - set(data))
+        if missing:
+            raise ValueError(f"adapter_config.json missing required fields: {missing}")
+        if data["format_version"] != 1:
+            raise ValueError("unsupported adapter_config.json format_version")
+        if not isinstance(data["target_manifest"], list) or not data["target_manifest"]:
+            raise ValueError("adapter_config.json must contain a non-empty target_manifest")
+        return cls(
+            format_version=int(data["format_version"]),
+            base_model_name_or_path=data["base_model_name_or_path"],
+            target_modules=list(data["target_modules"]),
+            num_target_layers=int(data["num_target_layers"]),
+            precision=dict(data["precision"]),
+            target_manifest=[dict(entry) for entry in data["target_manifest"]],
+            head_config=None if data["head_config"] is None else dict(data["head_config"]),
+        )
+
+
+@dataclass
+class MuQLoRAAdapter:
+    configuration: MuQLoRAConfiguration
+    tensors: dict[str, torch.Tensor]
+    task_head: MuQTaskHead | None = None
+
+    @classmethod
+    def from_model(cls, model: "MuQLoRA") -> "MuQLoRAAdapter":
+        return model.current_adapter()
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        task_head: MuQTaskHead | None = None,
+    ) -> "MuQLoRAAdapter":
+        load_file, _ = _require_safetensors()
+        path = Path(path)
+        with (path / ADAPTER_CONFIG_NAME).open("r", encoding="utf-8") as config_file:
+            configuration = MuQLoRAConfiguration.from_dict(json.load(config_file))
+        if configuration.head_config is not None:
+            if task_head is None:
+                raise ValueError("adapter package contains task-head weights; pass task_head")
+            if not isinstance(task_head, MuQTaskHead):
+                raise TypeError("task_head must be a MuQTaskHead")
+            if task_head.head_type != configuration.head_config.get("head_type"):
+                raise ValueError(
+                    "task head type mismatch: "
+                    f"saved={configuration.head_config.get('head_type')}, "
+                    f"current={task_head.head_type}"
+                )
+        elif task_head is not None:
+            raise ValueError("adapter package does not contain task-head weights")
+        tensors = load_file(str(path / ADAPTER_WEIGHTS_NAME))
+        _validate_adapter_tensor_keys(configuration, tensors, task_head)
+        if task_head is not None:
+            head_state = {
+                name: tensors[f"head.{name}"].to(
+                    device=parameter.device,
+                    dtype=parameter.dtype,
+                )
+                for name, parameter in task_head.state_dict().items()
+            }
+            task_head.load_state_dict(head_state)
+        return cls(configuration=configuration, tensors=tensors, task_head=task_head)
+
+    def save(self, path: str | Path):
+        _, save_file = _require_safetensors()
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        _validate_adapter_tensor_keys(self.configuration, self.tensors, self.task_head)
+        with (path / ADAPTER_CONFIG_NAME).open("w", encoding="utf-8") as config_file:
+            json.dump(self.configuration.to_dict(), config_file, indent=2, sort_keys=True)
+            config_file.write("\n")
+        save_file(
+            {key: tensor.detach().cpu().contiguous() for key, tensor in self.tensors.items()},
+            str(path / ADAPTER_WEIGHTS_NAME),
+        )
+
+
+def _target_tensor_keys(target_path: str) -> tuple[str, str]:
+    return (
+        f"lora.{target_path}.lora_A.weight",
+        f"lora.{target_path}.lora_B.weight",
+    )
+
+
+def _validate_adapter_tensor_keys(
+    configuration: MuQLoRAConfiguration,
+    tensors: Mapping[str, torch.Tensor],
+    task_head: MuQTaskHead | None,
+):
+    expected = set()
+    for entry in configuration.target_manifest:
+        expected.update(_target_tensor_keys(entry["target_path"]))
+    if configuration.head_config is not None:
+        if task_head is None:
+            raise ValueError("task_head is required to validate saved task-head tensors")
+        expected.update(f"head.{name}" for name in task_head.state_dict())
+    actual = set(tensors)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(f"adapter tensor keys mismatch: missing={missing}, extra={extra}")
 
 
 class MuQLoRA(nn.Module):
@@ -30,8 +215,8 @@ class MuQLoRA(nn.Module):
 
     The default path is feature-only: it runs MuQ preprocessing, conv
     subsampling, and the Conformer encoder, while skipping MuQ's original
-    codebook projection head. Passing ``heads`` turns the module into a
-    multi-task model that feeds pooled encoder features to each task head.
+    codebook projection head. Passing ``task_head`` turns the module into a
+    task model that feeds pooled encoder features to that ``MuQTaskHead``.
 
     Input waveform shape:
         ``[batch_size, timestep]`` or ``[batch_size, audio_channel=1, timestep]``.
@@ -50,10 +235,10 @@ class MuQLoRA(nn.Module):
         A BaseModelOutput-like object from the Conformer encoder where
         ``last_hidden_state`` has shape ``[batch_size, frame_count, hidden_size]``.
 
-    Multi-head output:
-        A dict mapping task name to each head output. With ``pooling="mean"``
-        or ``"cls"``, each head receives ``[batch_size, hidden_size]``.
-        With ``pooling="none"``, each head receives
+    Task-head output:
+        The active task head's TensorDict. With ``pooling="mean"`` or
+        ``"cls"``, the head receives ``[batch_size, hidden_size]``.
+        With ``pooling="none"``, the head receives
         ``[batch_size, frame_count, hidden_size]``.
 
     Precision policy:
@@ -82,11 +267,12 @@ class MuQLoRA(nn.Module):
         train_muq_head: bool = False,
         keep_base_model_eval: bool = True,
         feature_only: bool | None = None,
-        heads: Mapping[str, nn.Module] | nn.ModuleDict | None = None,
+        task_head: MuQTaskHead | None = None,
         pooling: str | None = "mean",
         drop_muq_head: bool | None = None,
         base_dtype: torch.dtype = torch.float16,
         adapter_dtype: torch.dtype = torch.float32,
+        base_model_name_or_path: str | None = None,
         keep_norm_fp32: bool = True,
         runtime_device: torch.device | str | None = None,
         yarn_factor: float | None = None,
@@ -108,10 +294,10 @@ class MuQLoRA(nn.Module):
             raise ValueError(
                 "train_muq_head is not supported; use feature_only=True with task heads instead"
             )
-        if heads is not None and not heads:
-            raise ValueError("heads must contain at least one task head")
-        if heads is not None and feature_only is False:
-            raise ValueError("heads require feature_only=True")
+        if task_head is not None and not isinstance(task_head, MuQTaskHead):
+            raise TypeError("task_head must be a MuQTaskHead")
+        if task_head is not None and feature_only is False:
+            raise ValueError("task_head requires feature_only=True")
         if base_dtype not in (torch.float32, torch.float16):
             raise ValueError("base_dtype must be torch.float32 or torch.float16; BF16 is unsupported")
         if adapter_dtype != torch.float32:
@@ -127,6 +313,7 @@ class MuQLoRA(nn.Module):
         self.keep_base_model_eval = keep_base_model_eval
         self.base_dtype = base_dtype
         self.adapter_dtype = adapter_dtype
+        self.base_model_name_or_path = base_model_name_or_path
         self.runtime_device = None if runtime_device is None else torch.device(runtime_device)
         self.keep_norm_fp32 = self.resolve_keep_norm_fp32(
             base_dtype=base_dtype,
@@ -138,11 +325,9 @@ class MuQLoRA(nn.Module):
             runtime_device=self.runtime_device,
         )
         self._norm_precision_hook_handles = []
-        self.heads = None if heads is None else (
-            heads if isinstance(heads, nn.ModuleDict) else nn.ModuleDict(heads)
-        )
+        self.task_head = task_head
         self.pooling = pooling
-        self.feature_only = self.heads is not None or (True if feature_only is None else feature_only)
+        self.feature_only = self.task_head is not None or (True if feature_only is None else feature_only)
         self.drop_muq_head = self.feature_only if drop_muq_head is None else drop_muq_head
         if self.drop_muq_head and not self.feature_only:
             raise ValueError("drop_muq_head requires feature_only=True")
@@ -162,17 +347,30 @@ class MuQLoRA(nn.Module):
                 truncate=yarn_truncate,
             )
 
+        self._lora_target_names: list[str] = []
         layer_count = num_target_layers
 
         # Create low-rank matrices for each linear layer in the model
-        for layer in reversed(self.model.model.conformer.layers):
+        layers = list(self.model.model.conformer.layers)
+        for layer_index in range(len(layers) - 1, -1, -1):
+            layer = layers[layer_index]
             if layer_count:
                 for name, module in layer.named_modules():
                     if name.split(".")[-1] in self.target_modules:
                         if isinstance(module, nn.Linear):
-                            module = LoRALinear(module, r, alpha, compute_dtype=base_dtype)
+                            module = LoRALinear(
+                                module,
+                                r,
+                                alpha,
+                                compute_dtype=base_dtype,
+                            )
                         elif isinstance(module, nn.Conv1d):
-                            module = LoRAConv1d(module, r, alpha, compute_dtype=base_dtype)
+                            module = LoRAConv1d(
+                                module,
+                                r,
+                                alpha,
+                                compute_dtype=base_dtype,
+                            )
                         else:
                             raise TypeError(
                                 f"target module {name!r} is not nn.Linear or nn.Conv1d"
@@ -183,6 +381,9 @@ class MuQLoRA(nn.Module):
                         for p in path:
                             parent = getattr(parent, p)
                         setattr(parent, last, module)
+                        self._lora_target_names.append(
+                            f"model.conformer.layers.{layer_index}.{name}"
+                        )
 
                 layer_count -= 1
 
@@ -190,6 +391,146 @@ class MuQLoRA(nn.Module):
         self.assert_dtype_policy()
         self._install_norm_precision_hooks()
         self.train()
+
+    def _iter_lora_modules(self):
+        for name, module in self.model.named_modules():
+            if isinstance(module, (LoRALinear, LoRAConv1d)):
+                yield name, module
+
+    def _target_manifest(self) -> list[dict[str, Any]]:
+        return [
+            module.target_manifest_entry(target_path)
+            for target_path, module in self._iter_lora_modules()
+        ]
+
+    def _adapter_configuration(self) -> MuQLoRAConfiguration:
+        return MuQLoRAConfiguration(
+            format_version=1,
+            base_model_name_or_path=self.base_model_name_or_path,
+            target_modules=list(self.target_modules),
+            num_target_layers=self.num_target_layers,
+            precision={
+                "base_dtype": _dtype_to_name(self.base_dtype),
+                "adapter_dtype": _dtype_to_name(self.adapter_dtype),
+                "frontend_dtype": _dtype_to_name(self.frontend_dtype),
+                "keep_norm_fp32": self.keep_norm_fp32,
+            },
+            target_manifest=self._target_manifest(),
+            head_config=None if self.task_head is None else self.task_head.get_config(),
+        )
+
+    def _adapter_weight_tensors(self) -> dict[str, torch.Tensor]:
+        tensors = {}
+        for target_path, module in self._iter_lora_modules():
+            lora_a_key, lora_b_key = _target_tensor_keys(target_path)
+            tensors[lora_a_key] = module.lora_A.weight.detach().cpu().contiguous()
+            tensors[lora_b_key] = module.lora_B.weight.detach().cpu().contiguous()
+
+        if self.task_head is not None:
+            for name, tensor in self.task_head.state_dict().items():
+                tensors[f"head.{name}"] = tensor.detach().cpu().contiguous()
+        return tensors
+
+    def current_adapter(self) -> MuQLoRAAdapter:
+        return MuQLoRAAdapter(
+            configuration=self._adapter_configuration(),
+            tensors=self._adapter_weight_tensors(),
+            task_head=self.task_head,
+        )
+
+    export_adapter = current_adapter
+
+    def _validate_adapter_manifest(self, adapter: MuQLoRAAdapter):
+        if not isinstance(adapter, MuQLoRAAdapter):
+            raise TypeError("set_adapter expects a MuQLoRAAdapter")
+        current_manifest = self._target_manifest()
+        if adapter.configuration.target_manifest != current_manifest:
+            raise ValueError(
+                "adapter target_manifest mismatch: "
+                f"saved={adapter.configuration.target_manifest}, current={current_manifest}"
+            )
+        if adapter.configuration.target_modules != list(self.target_modules):
+            raise ValueError(
+                "adapter target_modules mismatch: "
+                f"saved={adapter.configuration.target_modules}, current={list(self.target_modules)}"
+            )
+        if adapter.configuration.num_target_layers != self.num_target_layers:
+            raise ValueError(
+                "adapter num_target_layers mismatch: "
+                f"saved={adapter.configuration.num_target_layers}, current={self.num_target_layers}"
+            )
+        if adapter.configuration.head_config is not None:
+            if adapter.task_head is None:
+                raise ValueError("adapter contains task-head weights but has no task_head")
+            if adapter.task_head.head_type != adapter.configuration.head_config.get("head_type"):
+                raise ValueError(
+                    "task head type mismatch: "
+                    f"saved={adapter.configuration.head_config.get('head_type')}, "
+                    f"current={adapter.task_head.head_type}"
+                )
+        elif adapter.task_head is not None:
+            raise ValueError("adapter configuration does not contain task-head metadata")
+        _validate_adapter_tensor_keys(
+            adapter.configuration,
+            adapter.tensors,
+            adapter.task_head,
+        )
+
+    def set_adapter(self, adapter: MuQLoRAAdapter):
+        self._validate_adapter_manifest(adapter)
+        for target_path, module in self._iter_lora_modules():
+            lora_a_key, lora_b_key = _target_tensor_keys(target_path)
+            module.lora_A.weight.data.copy_(
+                adapter.tensors[lora_a_key].to(
+                    device=module.lora_A.weight.device,
+                    dtype=module.lora_A.weight.dtype,
+                )
+            )
+            module.lora_B.weight.data.copy_(
+                adapter.tensors[lora_b_key].to(
+                    device=module.lora_B.weight.device,
+                    dtype=module.lora_B.weight.dtype,
+                )
+            )
+
+        self.task_head = adapter.task_head
+        if self.task_head is not None:
+            target_device = next(self.model.parameters()).device
+            self.task_head.to(device=target_device, dtype=self.adapter_dtype)
+            head_state = {
+                name: adapter.tensors[f"head.{name}"].to(
+                    device=parameter.device,
+                    dtype=parameter.dtype,
+                )
+                for name, parameter in self.task_head.state_dict().items()
+            }
+            self.task_head.load_state_dict(head_state)
+            self.task_head.requires_grad_(True)
+        self.assert_dtype_policy()
+
+    def save_pretrained(self, path: str | Path):
+        warnings.warn(
+            "MuQLoRA.save_pretrained() is deprecated; use "
+            "MuQLoRAAdapter.from_model(model).save(path) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.current_adapter().save(path)
+
+    def load_adapter(
+        self,
+        path: str | Path,
+        task_head: MuQTaskHead | None = None,
+    ) -> MuQLoRAAdapter:
+        warnings.warn(
+            "MuQLoRA.load_adapter() is deprecated; use "
+            "MuQLoRAAdapter.load(path, task_head=...) and model.set_adapter(adapter) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        adapter = MuQLoRAAdapter.load(path, task_head=task_head)
+        self.set_adapter(adapter)
+        return adapter
 
     def _apply_yarn_rotary_embedding(
         self,
@@ -287,8 +628,10 @@ class MuQLoRA(nn.Module):
                 module.lora_A.to(dtype=self.adapter_dtype)
                 module.lora_B.to(dtype=self.adapter_dtype)
 
-        if self.heads is not None:
-            self.heads.to(dtype=self.adapter_dtype)
+        if self.task_head is not None:
+            target_device = next(self.model.parameters()).device
+            self.task_head.to(device=target_device, dtype=self.adapter_dtype)
+            self.task_head.requires_grad_(True)
 
     def _install_norm_precision_hooks(self):
         """Bridge reduced activations through FP32 normalization modules.
@@ -364,8 +707,12 @@ class MuQLoRA(nn.Module):
                     )
                 for parameter in module.lora_A.parameters():
                     adapter_parameter_ids.add(id(parameter))
+                    if not parameter.requires_grad:
+                        raise AssertionError("LoRA A parameter must require gradients")
                 for parameter in module.lora_B.parameters():
                     adapter_parameter_ids.add(id(parameter))
+                    if not parameter.requires_grad:
+                        raise AssertionError("LoRA B parameter must require gradients")
             if self.keep_norm_fp32 and isinstance(module, _NORM_MODULE_TYPES):
                 for parameter in module.parameters(recurse=False):
                     norm_parameter_ids.add(id(parameter))
@@ -375,8 +722,6 @@ class MuQLoRA(nn.Module):
         for name, parameter in self.model.named_parameters():
             if id(parameter) in adapter_parameter_ids:
                 self._assert_tensor_dtype(parameter, self.adapter_dtype, f"LoRA parameter {name}")
-                if not parameter.requires_grad:
-                    raise AssertionError(f"LoRA parameter {name} must require gradients")
                 continue
 
             expected_dtype = self.frontend_dtype if id(parameter) in frontend_parameter_ids else (
@@ -392,8 +737,8 @@ class MuQLoRA(nn.Module):
             )
             self._assert_tensor_dtype(buffer, expected_dtype, f"base buffer {name}")
 
-        if self.heads is not None:
-            for name, parameter in self.heads.named_parameters():
+        if self.task_head is not None:
+            for name, parameter in self.task_head.named_parameters():
                 self._assert_tensor_dtype(parameter, self.adapter_dtype, f"task-head parameter {name}")
                 if not parameter.requires_grad:
                     raise AssertionError(f"task-head parameter {name} must require gradients")
@@ -541,6 +886,21 @@ class MuQLoRA(nn.Module):
 
         raise ValueError(f"unsupported pooling mode: {self.pooling!r}")
 
+    @staticmethod
+    def _validate_tensordict(output: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        if not isinstance(output, Mapping):
+            raise TypeError("MuQTaskHead must return a Mapping[str, torch.Tensor]")
+        if not output:
+            raise ValueError("MuQTaskHead returned an empty TensorDict")
+        tensor_output = {}
+        for key, value in output.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError("MuQTaskHead output keys must be non-empty strings")
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"MuQTaskHead output {key!r} is not a torch.Tensor")
+            tensor_output[key] = value
+        return tensor_output
+
     def forward(
         self,
         x,
@@ -552,7 +912,7 @@ class MuQLoRA(nn.Module):
         return_features: bool = False,
         **kwargs,
     ):
-        """Run feature extraction, multi-head prediction, or the original MuQ path.
+        """Run feature extraction, active task-head prediction, or the original MuQ path.
 
         Args:
             x: Raw waveform shaped ``[batch_size, timestep]`` or
@@ -564,20 +924,21 @@ class MuQLoRA(nn.Module):
             input_type: ``"waveform"``, ``"mel"``, or ``"muq_mel"``. For
                 ``"mel"``, use ``sample_rate=24000``, ``n_fft=2048``,
                 ``hop_length=240``, ``n_mels=128``, ``is_db=True``.
-            return_features: In multi-head mode, return
+            return_features: In task-head mode, return
                 ``(task_outputs, encoder_features)`` instead of only
                 ``task_outputs``.
 
         Returns:
-            If ``heads`` were provided, returns ``dict[str, torch.Tensor]``.
+            If ``task_head`` was provided, returns the task head's
+            ``dict[str, torch.Tensor]`` directly.
             If ``return_features=True``, returns
             ``(dict[str, torch.Tensor], BaseModelOutput)``.
-            If no heads are provided and ``feature_only=True``, returns
+            If no task head is provided and ``feature_only=True``, returns
             encoder features with ``last_hidden_state`` shaped
             ``[batch_size, frame_count, hidden_size]``.
             If ``feature_only=False``, delegates to the wrapped MuQ model.
         """
-        if self.heads is not None:
+        if self.task_head is not None:
             features, encoder_attention_mask = self.encode(
                 x,
                 attention_mask=attention_mask,
@@ -592,7 +953,8 @@ class MuQLoRA(nn.Module):
             )
             head_input = self.pool_hidden_states(last_hidden_state, encoder_attention_mask)
             with _autocast_for(head_input, self.base_dtype):
-                outputs = {name: head(head_input) for name, head in self.heads.items()}
+                outputs = self.task_head(head_input)
+            outputs = self._validate_tensordict(outputs)
             outputs = {
                 name: output.to(dtype=self.adapter_dtype) for name, output in outputs.items()
             }
@@ -613,7 +975,7 @@ class MuQLoRA(nn.Module):
             )
 
         if input_type != "waveform":
-            raise ValueError("non-waveform input requires feature_only=True or heads")
+            raise ValueError("non-waveform input requires feature_only=True or task_head")
 
         # MuQ's public forward discards its codebook logits and returns encoder
         # features. Route through the dtype-aware encoder path so FP16 base

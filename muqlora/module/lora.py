@@ -16,18 +16,21 @@ class LoRALinear(nn.Module):
     ):
         super().__init__()
 
+        if r <= 0:
+            raise ValueError("r must be positive")
+
         self.module = module
         self.in_features = module.in_features
         self.out_features = module.out_features
-        self.r = r
-        self.alpha = alpha
-        self.scaling = alpha / r
+        self.r = int(r)
+        self.alpha = float(alpha)
+        self.scaling = self.alpha / self.r
         self.compute_dtype = module.weight.dtype if compute_dtype is None else compute_dtype
 
         self.module.requires_grad_(False)
 
-        self.lora_A = nn.Linear(self.in_features, r, bias=False)
-        self.lora_B = nn.Linear(r, self.out_features, bias=False)
+        self.lora_A = nn.Linear(self.in_features, self.r, bias=False)
+        self.lora_B = nn.Linear(self.r, self.out_features, bias=False)
         self.lora_A.to(device=module.weight.device, dtype=module.weight.dtype)
         self.lora_B.to(device=module.weight.device, dtype=module.weight.dtype)
 
@@ -37,6 +40,18 @@ class LoRALinear(nn.Module):
 
         self.lora_A.requires_grad_(True)
         self.lora_B.requires_grad_(True)
+
+    def target_manifest_entry(self, target_path: str) -> dict:
+        return {
+            "target_path": target_path,
+            "wrapper_type": self.__class__.__name__,
+            "rank": self.r,
+            "alpha": self.alpha,
+            "tensor_shapes": {
+                "lora_A.weight": list(self.lora_A.weight.shape),
+                "lora_B.weight": list(self.lora_B.weight.shape),
+            },
+        }
 
     def forward(self, x):
         base_output = self.module(x)
@@ -70,6 +85,8 @@ class LoRAConv1d(nn.Module):
     ):
         super().__init__()
 
+        if r <= 0:
+            raise ValueError("r must be positive")
         if module.kernel_size != (1,):
             raise ValueError("LoRAConv1d only supports pointwise Conv1d with kernel_size=1")
         if module.groups != 1:
@@ -78,23 +95,23 @@ class LoRAConv1d(nn.Module):
         self.module = module
         self.in_channels = module.in_channels
         self.out_channels = module.out_channels
-        self.r = r
-        self.alpha = alpha
-        self.scaling = alpha / r
+        self.r = int(r)
+        self.alpha = float(alpha)
+        self.scaling = self.alpha / self.r
         self.compute_dtype = module.weight.dtype if compute_dtype is None else compute_dtype
 
         self.module.requires_grad_(False)
 
         self.lora_A = nn.Conv1d(
             self.in_channels,
-            r,
+            self.r,
             kernel_size=1,
             stride=module.stride,
             padding=module.padding,
             dilation=module.dilation,
             bias=False,
         )
-        self.lora_B = nn.Conv1d(r, self.out_channels, kernel_size=1, bias=False)
+        self.lora_B = nn.Conv1d(self.r, self.out_channels, kernel_size=1, bias=False)
         self.lora_A.to(device=module.weight.device, dtype=module.weight.dtype)
         self.lora_B.to(device=module.weight.device, dtype=module.weight.dtype)
 
@@ -104,6 +121,18 @@ class LoRAConv1d(nn.Module):
 
         self.lora_A.requires_grad_(True)
         self.lora_B.requires_grad_(True)
+
+    def target_manifest_entry(self, target_path: str) -> dict:
+        return {
+            "target_path": target_path,
+            "wrapper_type": self.__class__.__name__,
+            "rank": self.r,
+            "alpha": self.alpha,
+            "tensor_shapes": {
+                "lora_A.weight": list(self.lora_A.weight.shape),
+                "lora_B.weight": list(self.lora_B.weight.shape),
+            },
+        }
 
     def forward(self, x):
         base_output = self.module(x)

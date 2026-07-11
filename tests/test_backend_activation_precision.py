@@ -113,10 +113,14 @@ class BackendActivationPrecisionTest(unittest.TestCase):
                 # Both checkpoint loads are deterministic. Building separate
                 # wrappers is required because MuQLoRA injects LoRA in-place.
                 reference = build_neutral_wrapper(
-                    muq.MuQ.from_pretrained(MODEL_ID), device, torch.float32
+                    muq.MuQ.from_pretrained(MODEL_ID, local_files_only=True),
+                    device,
+                    torch.float32,
                 )
                 candidate = build_neutral_wrapper(
-                    muq.MuQ.from_pretrained(MODEL_ID), device, torch.float16
+                    muq.MuQ.from_pretrained(MODEL_ID, local_files_only=True),
+                    device,
+                    torch.float16,
                 )
 
                 with torch.no_grad():

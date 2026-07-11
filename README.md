@@ -10,10 +10,12 @@ features.
 - LoRA adapters for `nn.Linear` and pointwise `nn.Conv1d` modules.
 - Feature-only MuQ encoder path that skips MuQ's original codebook projection
   head.
-- Optional multi-task heads with `mean`, `cls`, or no pooling.
+- Optional task heads with `mean`, `cls`, or no pooling.
 - Waveform, raw mel, and already-trimmed MuQ mel inputs.
 - FP16 base-model execution with FP32 normalization, frontend, adapters, and
   optimizer states.
+- PEFT-style adapter packages with JSON target manifests and safetensors
+  weights.
 - Optional YaRN scaling for rotary positional embeddings.
 
 ## Installation
@@ -31,7 +33,16 @@ import muq
 import torch
 from torch import nn
 
-from muqlora import MuQLoRA
+from muqlora import MuQLoRA, MuQTaskHead
+
+
+class GenreHead(MuQTaskHead):
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.projection = nn.Linear(hidden_size, 4)
+
+    def forward(self, x):
+        return {"genre_logits": self.projection(x)}
 
 
 base = muq.MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
@@ -47,16 +58,16 @@ model = MuQLoRA(
         "pointwise_conv2",
     ],
     num_target_layers=2,
-    heads={"genre": nn.Linear(base.config.encoder_dim, 4)},
+    task_head=GenreHead(base.config.encoder_dim),
 )
 
 waveform = torch.randn(1, 24_000)
 outputs = model(waveform)
-genre_logits = outputs["genre"]
+genre_logits = outputs["genre_logits"]
 ```
 
-Only LoRA parameters and optional task-head parameters require gradients. The
-wrapped MuQ model stays frozen.
+Only LoRA parameters and the optional task-head parameters require gradients.
+The wrapped MuQ model stays frozen.
 
 ## Inputs and Outputs
 
@@ -84,13 +95,17 @@ assert MUQ_MEL_INPUT_CONFIG == {
 }
 ```
 
-Without `heads`, `MuQLoRA` returns Conformer encoder features. With `heads`, it
-returns a dict of task outputs. Use `return_features=True` to get both:
+Without `task_head`, `MuQLoRA` returns Conformer encoder features. With
+`task_head`, it returns that task head's TensorDict directly. Use
+`return_features=True` to get both:
 
 ```python
 task_outputs, features = model(waveform, return_features=True)
 last_hidden_state = features.last_hidden_state
 ```
+
+`task_head` must be a `MuQTaskHead`. Arbitrary `nn.Module` heads are not
+supported.
 
 ## Precision Policy
 
@@ -132,6 +147,38 @@ config's `max_position_embeddings` or `max_source_positions`. The optional
 YaRN knobs `yarn_attention_factor`, `yarn_beta_fast`, `yarn_beta_slow`,
 `yarn_mscale`, `yarn_mscale_all_dim`, and `yarn_truncate` mirror the standard
 YaRN RoPE parameters.
+
+## Adapter Packages
+
+Adapter packages are sidecar objects. `MuQLoRA` does not maintain an adapter
+registry; it only carries the current adapter state.
+
+```python
+from muqlora import MuQLoRAAdapter
+
+adapter = MuQLoRAAdapter.from_model(model)
+adapter.save("genre-adapter")
+
+loaded = MuQLoRA(
+    muq.MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter"),
+    target_modules=["linear_q", "linear_v", "pointwise_conv1", "pointwise_conv2"],
+    num_target_layers=2,
+)
+loaded_adapter = MuQLoRAAdapter.load(
+    "genre-adapter",
+    task_head=GenreHead(loaded.model.config.encoder_dim),
+)
+loaded.set_adapter(loaded_adapter)
+```
+
+An adapter package contains:
+
+- `adapter_config.json`: target manifest, tensor shapes, precision
+  metadata, base model reference, and task head metadata.
+- `adapter_model.safetensors`: LoRA adapter tensors and task head state only.
+
+Loading fails if the current target module list, module types, ranks, tensor
+shapes, tensor keys, or task head type do not match the saved package.
 
 ## Training Memory Estimate
 
@@ -193,10 +240,15 @@ LoRA target modules, rank, target layers, task heads, and the safety multiplier.
 
 ```python
 from muqlora import (
+    ADAPTER_CONFIG_NAME,
+    ADAPTER_WEIGHTS_NAME,
     LoRAConv1d,
     LoRALinear,
     MUQ_MEL_INPUT_CONFIG,
+    MuQLoRAAdapter,
+    MuQLoRAConfiguration,
     MuQLoRA,
+    MuQTaskHead,
     YaRNRotaryPositionalEmbedding,
 )
 ```
@@ -210,7 +262,7 @@ Use the `muq` conda environment when available:
 
 ```bash
 /home/lzq/anaconda3/bin/conda run -n muq python -m unittest tests.test_yarn_rotary
-/home/lzq/anaconda3/bin/conda run -n muq python -m unittest tests.test_muqlora_training tests.test_yarn_rotary
+/home/lzq/anaconda3/bin/conda run -n muq python -m unittest discover -s tests
 ```
 
 `tests.test_backend_activation_precision` compares FP16 and FP32 hidden states

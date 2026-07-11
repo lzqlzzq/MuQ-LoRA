@@ -154,7 +154,7 @@ Adapter packages are sidecar objects. `MuQLoRA` does not maintain an adapter
 registry; it only carries the current adapter state.
 
 ```python
-from muqlora import MuQLoRAAdapter
+from muqlora.adapter import MuQLoRAAdapter
 
 adapter = MuQLoRAAdapter.from_model(model)
 adapter.save("genre-adapter")
@@ -253,8 +253,14 @@ from muqlora import (
 )
 ```
 
-The small adapter and RoPE modules live under `muqlora.module`; the top-level
-imports above are kept for compatibility.
+The low-level LoRA and RoPE modules live under `muqlora.module`; the top-level
+imports above are kept for compatibility. Sidecar adapter APIs are also exposed
+from `muqlora.adapter`, and task-head APIs are exposed from `muqlora.head`:
+
+```python
+from muqlora.adapter import MuQLoRAAdapter, MuQLoRAConfiguration
+from muqlora.head import MuQTaskHead
+```
 
 ## Tests
 

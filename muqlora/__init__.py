@@ -1,12 +1,14 @@
 from muqlora.module import LoRAConv1d, LoRALinear, YaRNRotaryPositionalEmbedding
-from muqlora.muqlora import (
+from muqlora.adapter import (
     ADAPTER_CONFIG_NAME,
     ADAPTER_WEIGHTS_NAME,
-    MUQ_MEL_INPUT_CONFIG,
     MuQLoRAAdapter,
     MuQLoRAConfiguration,
+)
+from muqlora.head import MuQTaskHead
+from muqlora.muqlora import (
+    MUQ_MEL_INPUT_CONFIG,
     MuQLoRA,
-    MuQTaskHead,
 )
 
 __all__ = [

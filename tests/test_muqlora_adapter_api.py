@@ -7,6 +7,8 @@ import torch
 from safetensors.torch import load_file
 
 from muqlora import MuQLoRA, MuQLoRAAdapter
+from muqlora.adapter import MuQLoRAAdapter as PublicModuleAdapter
+from muqlora.head import MuQTaskHead as PublicModuleTaskHead
 from tests.test_muqlora_training import (
     LinearTensorHead,
     MODEL_ID,
@@ -38,6 +40,10 @@ class MuQLoRAAdapterAPITest(unittest.TestCase):
             num_target_layers=1,
             base_model_name_or_path=MODEL_ID,
         )
+
+    def test_public_adapter_and_head_modules_export_stable_types(self):
+        self.assertIs(PublicModuleAdapter, MuQLoRAAdapter)
+        self.assertTrue(issubclass(LinearTensorHead, PublicModuleTaskHead))
 
     def test_adapter_sidecar_save_load_and_set_round_trip(self):
         model = self.build_model()

@@ -2,6 +2,7 @@ import unittest
 
 import muq
 import torch
+from tensordict import TensorDict, TensorDictBase
 from torch import nn
 
 from muqlora import LoRAConv1d, LoRALinear, MUQ_MEL_INPUT_CONFIG, MuQLoRA, MuQTaskHead
@@ -28,7 +29,17 @@ class LinearTensorHead(MuQTaskHead):
         return config
 
     def forward(self, x):
-        return {self.output_key: self.projection(x)}
+        logits = self.projection(x)
+        return TensorDict({self.output_key: logits}, batch_size=logits.shape[:-1])
+
+
+class DictTensorHead(MuQTaskHead):
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.projection = nn.Linear(hidden_size, 4)
+
+    def forward(self, x):
+        return {"logits": self.projection(x)}
 
 
 def train_task_for_steps(
@@ -176,6 +187,15 @@ class MuQLoRATrainingTest(unittest.TestCase):
         waveform = torch.randn(1, 24000)
         mel = model.model.model.preprocessor_melspec_2048(waveform.float())
 
+        original_head = model.task_head
+        model.task_head = DictTensorHead(model.model.config.encoder_dim).to(
+            device=mel.device,
+            dtype=model.adapter_dtype,
+        )
+        with self.assertRaisesRegex(TypeError, "TensorDict"):
+            model(mel, input_type="mel")
+        model.task_head = original_head
+
         adapter_io_dtypes = []
 
         def capture_adapter_io(_module, inputs, output):
@@ -190,7 +210,9 @@ class MuQLoRATrainingTest(unittest.TestCase):
             linear_hook.remove()
             conv_hook.remove()
 
-        self.assertEqual(set(waveform_output), {"logits"})
+        self.assertIsInstance(waveform_output, TensorDictBase)
+        self.assertIsInstance(mel_output, TensorDictBase)
+        self.assertEqual(set(waveform_output.keys()), {"logits"})
         self.assertTrue(adapter_io_dtypes)
         self.assertTrue(
             all(

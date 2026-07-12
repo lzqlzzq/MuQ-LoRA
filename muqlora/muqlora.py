@@ -377,9 +377,7 @@ class MuQLoRA(nn.Module):
             with _autocast_for(head_input, self.base_dtype):
                 outputs = self.task_head(head_input)
             outputs = self._validate_tensordict(outputs)
-            outputs = {
-                name: output.to(dtype=self.adapter_dtype) for name, output in outputs.items()
-            }
+            outputs = outputs.to(dtype=self.adapter_dtype)
 
             if return_features:
                 return outputs, features

@@ -31,6 +31,7 @@ The package requires Python 3.10+ plus `torch` and `muq`.
 ```python
 import muq
 import torch
+from tensordict import TensorDict
 from torch import nn
 
 from muqlora import MuQLoRA, MuQTaskHead
@@ -42,7 +43,8 @@ class GenreHead(MuQTaskHead):
         self.projection = nn.Linear(hidden_size, 4)
 
     def forward(self, x):
-        return {"genre_logits": self.projection(x)}
+        logits = self.projection(x)
+        return TensorDict({"genre_logits": logits}, batch_size=logits.shape[:-1])
 
 
 base = muq.MuQ.from_pretrained("OpenMuQ/MuQ-large-msd-iter")
@@ -105,7 +107,7 @@ last_hidden_state = features.last_hidden_state
 ```
 
 `task_head` must be a `MuQTaskHead`. Arbitrary `nn.Module` heads are not
-supported.
+supported, and task-head outputs must be `tensordict.TensorDict` instances.
 
 ## Precision Policy
 

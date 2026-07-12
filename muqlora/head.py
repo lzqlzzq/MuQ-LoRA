@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from typing import Any
 
 import torch
+from tensordict import TensorDictBase
 from torch import nn
 
 
@@ -26,20 +26,18 @@ class MuQTaskHead(nn.Module, ABC):
         }
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> Mapping[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> TensorDictBase:
         """Return a TensorDict for this task."""
 
 
-def validate_tensordict(output: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    if not isinstance(output, Mapping):
-        raise TypeError("MuQTaskHead must return a Mapping[str, torch.Tensor]")
-    if not output:
+def validate_tensordict(output: TensorDictBase) -> TensorDictBase:
+    if not isinstance(output, TensorDictBase):
+        raise TypeError("MuQTaskHead must return a tensordict.TensorDict")
+    if len(output.keys()) == 0:
         raise ValueError("MuQTaskHead returned an empty TensorDict")
-    tensor_output = {}
     for key, value in output.items():
         if not isinstance(key, str) or not key:
             raise TypeError("MuQTaskHead output keys must be non-empty strings")
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"MuQTaskHead output {key!r} is not a torch.Tensor")
-        tensor_output[key] = value
-    return tensor_output
+    return output

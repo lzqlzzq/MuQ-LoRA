@@ -1,3 +1,4 @@
 muq
 safetensors
 torch
+tensordict

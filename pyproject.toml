@@ -16,6 +16,7 @@ dependencies = [
     "muq",
     "safetensors",
     "torch",
+    "tensordict",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

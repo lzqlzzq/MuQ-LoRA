@@ -1,4 +1,4 @@
-muq
+-e ./flashMuQ
 safetensors
 torch
 tensordict

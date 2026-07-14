@@ -1,0 +1,3 @@
+[submodule "flashMuQ"]
+	path = flashMuQ
+	url = git@github.com:lzqlzzq/flashMuQ.git

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>MuQ-LoRA Memory Calculator</title>
   <style>
     :root {
@@ -16,7 +17,6 @@
       --accent: #0d766e;
       --accent-2: #b45309;
       --danger: #b91c1c;
-      --line: #9aa7b6;
       --shadow: 0 10px 28px rgba(20, 32, 46, 0.08);
     }
 
@@ -33,7 +33,7 @@
     }
 
     main {
-      width: min(1240px, calc(100% - 32px));
+      width: min(1280px, calc(100% - 32px));
       margin: 24px auto 40px;
     }
 
@@ -66,7 +66,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: minmax(320px, 440px) minmax(0, 1fr);
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
       gap: 18px;
       align-items: start;
     }
@@ -116,8 +116,7 @@
       accent-color: var(--accent);
     }
 
-    input[type="number"],
-    select {
+    input[type="number"] {
       width: 100%;
       min-height: 36px;
       border: 1px solid var(--border);
@@ -175,6 +174,35 @@
       margin-top: 6px;
     }
 
+    .preset {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+      background: #e7f3f1;
+      border: 1px solid #c5dfdb;
+      border-radius: 7px;
+      margin-bottom: 14px;
+    }
+
+    .preset div {
+      min-width: 0;
+    }
+
+    .preset span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .preset strong {
+      display: block;
+      font-size: 13px;
+      margin-top: 2px;
+    }
+
     .results {
       display: grid;
       gap: 18px;
@@ -182,7 +210,7 @@
 
     .summary {
       display: grid;
-      grid-template-columns: 1.2fr 1fr;
+      grid-template-columns: 1.15fr 1fr;
       gap: 18px;
       align-items: stretch;
     }
@@ -190,7 +218,7 @@
     .total {
       display: grid;
       align-content: center;
-      min-height: 170px;
+      min-height: 180px;
       background: #0f2d2a;
       color: white;
       border-radius: 8px;
@@ -210,6 +238,17 @@
       font-size: 14px;
     }
 
+    .peak-chip {
+      justify-self: start;
+      margin-top: 14px;
+      padding: 5px 9px;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 999px;
+      color: #fff4d6;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
     .metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -221,7 +260,7 @@
       border-radius: 8px;
       padding: 14px;
       background: var(--surface);
-      min-height: 80px;
+      min-height: 85px;
     }
 
     .metric .name {
@@ -231,9 +270,49 @@
     }
 
     .metric .num {
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 760;
-      line-height: 1.1;
+      line-height: 1.15;
+    }
+
+    .metric .sub {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 5px;
+    }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .pipeline-step {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-2);
+    }
+
+    .pipeline-step .stage {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+
+    .pipeline-step .count {
+      font-size: 18px;
+      font-weight: 760;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .pipeline-step .shape {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      margin-top: 5px;
+      overflow-wrap: anywhere;
     }
 
     .bar-list {
@@ -243,7 +322,7 @@
 
     .bar-row {
       display: grid;
-      grid-template-columns: 150px minmax(0, 1fr) 86px;
+      grid-template-columns: 190px minmax(0, 1fr) 90px;
       gap: 12px;
       align-items: center;
       min-height: 28px;
@@ -279,11 +358,35 @@
       background: var(--danger);
     }
 
+    .bar.muted {
+      background: #7c8a99;
+    }
+
     .bar-value {
       text-align: right;
       color: var(--muted);
       font-variant-numeric: tabular-nums;
       font-size: 13px;
+    }
+
+    .phase-note,
+    .caveat {
+      margin-top: 13px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .phase-note {
+      color: #31534f;
+      background: #edf7f5;
+      border: 1px solid #cfe5e1;
+    }
+
+    .caveat {
+      color: #6d4b14;
+      background: #fff8e8;
+      border: 1px solid #ead7aa;
     }
 
     code,
@@ -298,7 +401,7 @@
       color: #d9f2ee;
       border-radius: 8px;
       padding: 14px;
-      font-size: 13px;
+      font-size: 12px;
       overflow-x: auto;
     }
 
@@ -326,6 +429,12 @@
       font-variant-numeric: tabular-nums;
     }
 
+    @media (max-width: 1040px) {
+      .pipeline {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
     @media (max-width: 920px) {
       .layout,
       .summary {
@@ -343,12 +452,14 @@
 
     @media (max-width: 560px) {
       main {
-        width: min(100% - 20px, 1240px);
+        width: min(100% - 20px, 1280px);
         margin-top: 14px;
       }
 
       .metrics,
-      .check-grid {
+      .check-grid,
+      .preset,
+      .pipeline {
         grid-template-columns: 1fr;
       }
 
@@ -368,15 +479,22 @@
     <header>
       <div>
         <h1>MuQ-LoRA Memory Calculator</h1>
-        <p>Estimate training memory for the 12-layer MuQ Conformer with FP16 + AdamW assumptions.</p>
+        <p>Phase-aware estimate for the feature-only MuQ-large path: 100 Hz Mel frontend to 25 Hz Conformer latent.</p>
       </div>
-      <p id="sequenceCaption">S = 750 encoder frames</p>
+      <p id="sequenceCaption">Mel 3,000 → latent 750</p>
     </header>
 
     <div class="layout">
       <section class="panel controls" aria-label="Memory estimate controls">
         <div class="group">
-          <h2>Batch and Sequence</h2>
+          <h2>MuQ-large preset</h2>
+          <div class="preset" aria-label="Fixed model preset">
+            <div><span>Audio</span><strong>24 kHz</strong></div>
+            <div><span>Mel</span><strong>100 fps</strong></div>
+            <div><span>Latent</span><strong>25 fps</strong></div>
+            <div><span>Encoder</span><strong>12 × 1,024</strong></div>
+          </div>
+
           <label for="batchRange">Batch size</label>
           <div class="row">
             <input id="batchRange" type="range" min="1" max="128" step="1" value="8">
@@ -385,34 +503,24 @@
 
           <label for="secondsRange">Audio seconds per sample</label>
           <div class="row">
-            <input id="secondsRange" type="range" min="1" max="180" step="1" value="30">
+            <input id="secondsRange" type="range" min="1" max="270" step="1" value="30">
             <input id="seconds" type="number" min="0.1" max="36000" step="0.1" value="30">
           </div>
-
-          <label for="labelRate">Label rate / encoder fps</label>
-          <div class="row">
-            <input id="labelRateRange" type="range" min="1" max="100" step="1" value="25">
-            <input id="labelRate" type="number" min="1" max="1000" step="1" value="25">
-          </div>
+          <div class="note">The slider covers the planned 4.5-minute context. The numeric input accepts longer diagnostic cases.</div>
         </div>
 
         <div class="group">
-          <h2>Model Shape</h2>
-          <label for="layers">Encoder layers</label>
-          <div class="row">
-            <input id="layersRange" type="range" min="1" max="24" step="1" value="12">
-            <input id="layers" type="number" min="1" max="96" step="1" value="12">
-          </div>
-
-          <label for="safety">Safety multiplier k</label>
+          <h2>Dynamic headroom</h2>
+          <label for="safety">Dynamic safety multiplier k</label>
           <div class="row">
             <input id="safetyRange" type="range" min="1" max="3" step="0.05" value="1.6">
             <input id="safety" type="number" min="1" max="10" step="0.05" value="1.6">
           </div>
+          <div class="note">Applied to frontend and encoder dynamic phases, not persistent parameter storage.</div>
         </div>
 
         <div class="group">
-          <h2>Attention and Optimizer</h2>
+          <h2>Attention and optimizer</h2>
           <div class="label">Attention kernel</div>
           <div class="segmented">
             <label class="choice">
@@ -424,37 +532,39 @@
               Non-Flash
             </label>
           </div>
-          <div class="note">Flash uses a linear activation estimate; non-Flash adds an S^2 attention term.</div>
+          <div class="note">Flash uses latent-linear storage; Non-Flash adds a latent S² attention term.</div>
 
           <div class="label" style="margin-top: 14px;">Optimizer scope</div>
           <div class="segmented">
             <label class="choice">
               <input type="radio" name="optimizer" value="lora" checked>
-              LoRA-only
+              LoRA + head
             </label>
             <label class="choice">
               <input type="radio" name="optimizer" value="full">
-              Full AdamW
+              Full backbone
             </label>
           </div>
+          <div class="note">Full backbone is a capacity comparison, not the current frozen-base MuQLoRA runtime.</div>
 
           <div class="toggle" style="margin-top: 14px;">
             <label class="choice">
               <input id="attentionMask" type="checkbox">
-              Include attention mask tensor
+              Batch has padding: allocate 4D mask
             </label>
           </div>
+          <div class="note">An all-valid 2D mask is dropped before attention and adds no S² tensor.</div>
         </div>
 
         <div class="group">
-          <h2>LoRA Modules</h2>
+          <h2>LoRA modules</h2>
           <label for="rank">LoRA rank r</label>
           <div class="row">
             <input id="rankRange" type="range" min="1" max="128" step="1" value="8">
             <input id="rank" type="number" min="1" max="4096" step="1" value="8">
           </div>
 
-          <label for="targetLayers">Target layers</label>
+          <label for="targetLayers">Target tail layers</label>
           <div class="row">
             <input id="targetLayersRange" type="range" min="1" max="12" step="1" value="2">
             <input id="targetLayers" type="number" min="1" max="96" step="1" value="2">
@@ -473,18 +583,19 @@
         </div>
 
         <div class="group">
-          <h2>Task Heads</h2>
+          <h2>Linear task heads</h2>
           <label for="headCount">Number of heads</label>
           <div class="row">
             <input id="headCountRange" type="range" min="0" max="16" step="1" value="1">
             <input id="headCount" type="number" min="0" max="1024" step="1" value="1">
           </div>
 
-          <label for="headClasses">Classes / output dim per head</label>
+          <label for="headClasses">Output dim per head</label>
           <div class="row">
             <input id="headClassesRange" type="range" min="1" max="512" step="1" value="4">
             <input id="headClasses" type="number" min="1" max="100000" step="1" value="4">
           </div>
+          <div class="note">Head parameters assume one Linear(1024, output_dim) per head.</div>
         </div>
       </section>
 
@@ -492,32 +603,46 @@
         <div class="summary">
           <div class="total">
             <div class="value" id="totalMemory">0.00 GiB</div>
-            <div class="caption" id="totalCaption">Estimated peak training memory</div>
+            <div class="caption" id="totalCaption">Estimated steady-state peak training memory</div>
+            <div class="peak-chip" id="peakPhase">Peak phase: frontend</div>
           </div>
 
           <div class="metrics">
             <div class="metric">
-              <div class="name">Encoder frames S</div>
-              <div class="num" id="framesMetric">750</div>
+              <div class="name">Raw → trimmed Mel</div>
+              <div class="num" id="melMetric">3,001 → 3,000</div>
+              <div class="sub">100 Hz plus the final frame MuQ trims</div>
             </div>
             <div class="metric">
-              <div class="name">LoRA params</div>
-              <div class="num" id="loraParamMetric">0.2M</div>
+              <div class="name">Stage-1 single tensor</div>
+              <div class="num" id="stage1Metric">1.465 GiB</div>
+              <div class="sub" id="stage1Shape">[8, 512, 64, 1,500] FP32</div>
             </div>
             <div class="metric">
-              <div class="name">Base params</div>
-              <div class="num" id="baseParamMetric">303.2M</div>
+              <div class="name">Latent frames S</div>
+              <div class="num" id="latentMetric">750</div>
+              <div class="sub">25 Hz Conformer sequence</div>
             </div>
             <div class="metric">
-              <div class="name">Formula mode</div>
-              <div class="num" id="modeMetric">Flash</div>
+              <div class="name">Backward-active layers</div>
+              <div class="num" id="activeLayersMetric">2 / 12</div>
+              <div class="sub" id="activeLayersSub">LoRA tail only</div>
             </div>
           </div>
         </div>
 
         <div class="panel">
-          <h2>Memory Breakdown</h2>
+          <h2>Length and shape pipeline</h2>
+          <div class="pipeline" id="pipeline"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Phase-aware memory breakdown</h2>
           <div class="bar-list" id="breakdownBars"></div>
+          <div class="phase-note" id="phaseNote"></div>
+          <div class="caveat">
+            The estimate excludes CUDA context, torch.compile / Inductor caches, and device-specific cuDNN workspaces. Keep additional device headroom.
+          </div>
         </div>
 
         <div class="panel">
@@ -526,7 +651,7 @@
         </div>
 
         <div class="panel">
-          <h2>Selected LoRA Modules</h2>
+          <h2>Selected LoRA modules</h2>
           <table>
             <thead>
               <tr>
@@ -543,34 +668,55 @@
   </main>
 
   <script>
+    "use strict";
+
     const BYTES_PER_GIB = 1024 ** 3;
-    const H = 1024;
-    const I = 4096;
-    const HEADS = 16;
-    const BASE_OTHER_PARAMS = 13_126_144;
-    const PARAMS_PER_LAYER = 24_175_616;
-    const FULL_ADAM_BYTES_PER_PARAM = 16;
-    const FROZEN_FP16_BYTES_PER_PARAM = 2;
-    const TRAINABLE_ADAM_BYTES_PER_PARAM = 16;
+    const FP16_BYTES = 2;
+    const FP32_BYTES = 4;
+    const BOOL_BYTES = 1;
+    const ADAM_TRAINABLE_BYTES = 16;
+    const FULL_ADAM_BYTES = 16;
+
+    const PRESET = Object.freeze({
+      sampleRate: 24_000,
+      hopLength: 240,
+      melBands: 128,
+      melRate: 100,
+      latentRate: 25,
+      frontendChannels: 512,
+      stage1Bands: 64,
+      stage2Bands: 32,
+      hiddenSize: 1024,
+      attentionHeads: 16,
+      defaultLayers: 12,
+    });
+
+    const BASE_PARAMS = Object.freeze({
+      frontendFp32: 26_233_856,
+      nonFrontendNormFp32Fixed: 2_048,
+      nonFrontendNormFp32PerLayer: 12_288,
+      otherFp16Fixed: 8_661_376,
+      otherFp16PerLayer: 24_163_328,
+    });
+
     const FLASH_ACT_COEF = 0.001465;
     const STANDARD_ATTENTION_COEF = 0.000001431;
+    const ANALYTIC_REFERENCE_LAYERS = 24;
 
     const moduleDefs = {
-      linear_q: { label: "linear_q", perRank: 2 * H },
-      linear_k: { label: "linear_k", perRank: 2 * H },
-      linear_v: { label: "linear_v", perRank: 2 * H },
-      linear_out: { label: "linear_out", perRank: 2 * H },
-      pointwise_conv1: { label: "pointwise_conv1", perRank: 3 * H },
-      pointwise_conv2: { label: "pointwise_conv2", perRank: 2 * H },
-      intermediate_dense: { label: "intermediate_dense", perRank: H + I },
-      output_dense: { label: "output_dense", perRank: H + I },
+      linear_q: { label: "linear_q", perRank: 2 * PRESET.hiddenSize },
+      linear_k: { label: "linear_k", perRank: 2 * PRESET.hiddenSize },
+      linear_v: { label: "linear_v", perRank: 2 * PRESET.hiddenSize },
+      linear_out: { label: "linear_out", perRank: 2 * PRESET.hiddenSize },
+      pointwise_conv1: { label: "pointwise_conv1", perRank: 3 * PRESET.hiddenSize },
+      pointwise_conv2: { label: "pointwise_conv2", perRank: 2 * PRESET.hiddenSize },
+      intermediate_dense: { label: "intermediate_dense", perRank: PRESET.hiddenSize + 4096 },
+      output_dense: { label: "output_dense", perRank: PRESET.hiddenSize + 4096 },
     };
 
     const linkedInputs = [
       ["batchRange", "batch"],
       ["secondsRange", "seconds"],
-      ["labelRateRange", "labelRate"],
-      ["layersRange", "layers"],
       ["safetyRange", "safety"],
       ["rankRange", "rank"],
       ["targetLayersRange", "targetLayers"],
@@ -587,7 +733,7 @@
     }
 
     function radioValue(name) {
-      return document.querySelector(`input[name="${name}"]:checked`).value;
+      return document.querySelector("input[name=" + JSON.stringify(name) + "]:checked").value;
     }
 
     function gib(bytes) {
@@ -595,186 +741,442 @@
     }
 
     function formatGiB(value) {
-      if (value >= 100) return `${value.toFixed(1)} GiB`;
-      if (value >= 10) return `${value.toFixed(2)} GiB`;
-      return `${value.toFixed(3)} GiB`;
+      if (value >= 100) return value.toFixed(1) + " GiB";
+      if (value >= 10) return value.toFixed(2) + " GiB";
+      return value.toFixed(3) + " GiB";
     }
 
     function formatParams(value) {
-      if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-      if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-      if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-      return `${value}`;
+      if (value >= 1e9) return (value / 1e9).toFixed(2) + "B";
+      if (value >= 1e6) return (value / 1e6).toFixed(1) + "M";
+      if (value >= 1e3) return (value / 1e3).toFixed(1) + "K";
+      return String(value);
+    }
+
+    function formatInteger(value) {
+      return Math.round(value).toLocaleString("en-US");
     }
 
     function selectedModules() {
-      return Array.from(document.querySelectorAll("#moduleChecks input:checked")).map((input) => input.value);
+      return Array.from(document.querySelectorAll("#moduleChecks input:checked")).map(function (input) {
+        return input.value;
+      });
     }
 
     function clampTargetLayers() {
-      const layers = Math.max(1, numberValue("layers"));
-      const target = Math.min(Math.max(1, numberValue("targetLayers")), layers);
+      const target = Math.min(
+        Math.max(1, Math.round(numberValue("targetLayers"))),
+        PRESET.defaultLayers
+      );
       byId("targetLayers").value = target;
-      byId("targetLayersRange").max = layers;
+      byId("targetLayersRange").max = PRESET.defaultLayers;
       byId("targetLayersRange").value = target;
     }
 
     function loraParams(rank, targetLayers, modules) {
-      return modules.reduce((sum, name) => sum + moduleDefs[name].perRank * rank * targetLayers, 0);
+      return modules.reduce(function (sum, name) {
+        return sum + moduleDefs[name].perRank * rank * targetLayers;
+      }, 0);
     }
 
     function headParams(headCount, headClasses) {
-      return headCount * (H * headClasses + headClasses);
+      return headCount * (PRESET.hiddenSize * headClasses + headClasses);
+    }
+
+    function computeLengths(seconds) {
+      const samples = Math.max(1, Math.round(seconds * PRESET.sampleRate));
+      const rawMelFrames = Math.floor(samples / PRESET.hopLength) + 1;
+      const trimmedMelFrames = Math.max(1, rawMelFrames - 1);
+      const stage1Frames = Math.ceil(trimmedMelFrames / 2);
+      const latentFrames = Math.ceil(stage1Frames / 2);
+      return {
+        samples: samples,
+        rawMelFrames: rawMelFrames,
+        trimmedMelFrames: trimmedMelFrames,
+        stage1Frames: stage1Frames,
+        latentFrames: latentFrames,
+      };
+    }
+
+    function baseParameterBreakdown(layers) {
+      const frontendFp32 = BASE_PARAMS.frontendFp32;
+      const normFp32 = BASE_PARAMS.nonFrontendNormFp32Fixed
+        + BASE_PARAMS.nonFrontendNormFp32PerLayer * layers;
+      const otherFp16 = BASE_PARAMS.otherFp16Fixed
+        + BASE_PARAMS.otherFp16PerLayer * layers;
+      return {
+        frontendFp32: frontendFp32,
+        normFp32: normFp32,
+        otherFp16: otherFp16,
+        total: frontendFp32 + normFp32 + otherFp16,
+      };
+    }
+
+    function calculateMuQMemory(options) {
+      const batch = Math.max(1, Math.round(Number(options.batch)));
+      const seconds = Math.max(0.1, Number(options.seconds));
+      const layers = PRESET.defaultLayers;
+      const safety = Math.max(1, Number(options.safety));
+      const rank = Math.max(1, Math.round(Number(options.rank)));
+      const targetLayers = Math.min(
+        Math.max(1, Math.round(Number(options.targetLayers))),
+        layers
+      );
+      const headCount = Math.max(0, Math.round(Number(options.headCount)));
+      const headClasses = Math.max(1, Math.round(Number(options.headClasses)));
+      const attentionMode = options.attentionMode === "standard" ? "standard" : "flash";
+      const optimizerMode = options.optimizerMode === "full" ? "full" : "lora";
+      const includePaddingMask = Boolean(options.includePaddingMask);
+      const modules = Array.isArray(options.modules) ? options.modules : [];
+
+      const lengths = computeLengths(seconds);
+      const baseParams = baseParameterBreakdown(layers);
+      const adapterParams = loraParams(rank, targetLayers, modules);
+      const taskHeadParams = headParams(headCount, headClasses);
+      const trainableParams = adapterParams + taskHeadParams;
+
+      const loraPersistentBytes =
+        baseParams.frontendFp32 * FP32_BYTES
+        + baseParams.normFp32 * FP32_BYTES
+        + baseParams.otherFp16 * FP16_BYTES
+        + trainableParams * ADAM_TRAINABLE_BYTES;
+      const fullPersistentBytes =
+        (baseParams.total + trainableParams) * FULL_ADAM_BYTES;
+      const persistentGiB = gib(
+        optimizerMode === "full" ? fullPersistentBytes : loraPersistentBytes
+      );
+
+      const rawMelInputBytes =
+        batch * PRESET.melBands * lengths.rawMelFrames * FP32_BYTES;
+      const inputMaskBytes = includePaddingMask
+        ? batch * lengths.rawMelFrames * BOOL_BYTES
+        : 0;
+      const inputGiB = gib(rawMelInputBytes + inputMaskBytes);
+
+      const stage1TensorBytes =
+        batch
+        * PRESET.frontendChannels
+        * PRESET.stage1Bands
+        * lengths.stage1Frames
+        * FP32_BYTES;
+      const stage2TensorBytes =
+        batch
+        * PRESET.frontendChannels
+        * PRESET.stage2Bands
+        * lengths.latentFrames
+        * FP32_BYTES;
+      const frontendOutputFp32Bytes =
+        batch * lengths.latentFrames * PRESET.hiddenSize * FP32_BYTES;
+      const latentFp16Bytes =
+        batch * lengths.latentFrames * PRESET.hiddenSize * FP16_BYTES;
+
+      const frozenFrontendForwardBytes = Math.max(
+        3 * stage1TensorBytes,
+        stage1TensorBytes + 3 * stage2TensorBytes,
+        stage2TensorBytes + frontendOutputFp32Bytes,
+        frontendOutputFp32Bytes + latentFp16Bytes
+      );
+      const fullFrontendSavedBytes =
+        5 * stage1TensorBytes + 5 * stage2TensorBytes;
+      const frontendPhaseGiB = gib(frozenFrontendForwardBytes) * safety;
+      const frontendSavedGiB = optimizerMode === "full"
+        ? gib(fullFrontendSavedBytes) * safety
+        : 0;
+
+      const activeLayers = optimizerMode === "full" ? layers : targetLayers;
+      const activeLayerScale = activeLayers / ANALYTIC_REFERENCE_LAYERS;
+      const linearEncoderGiB =
+        activeLayerScale
+        * batch
+        * FLASH_ACT_COEF
+        * lengths.latentFrames;
+      const quadraticAttentionGiB =
+        attentionMode === "standard"
+          ? activeLayerScale
+            * batch
+            * STANDARD_ATTENTION_COEF
+            * lengths.latentFrames
+            * lengths.latentFrames
+          : 0;
+      const formattedMaskGiB = includePaddingMask
+        ? gib(batch * lengths.latentFrames * lengths.latentFrames * FP16_BYTES)
+        : 0;
+      const encoderRawGiB =
+        gib(latentFp16Bytes)
+        + linearEncoderGiB
+        + quadraticAttentionGiB
+        + formattedMaskGiB;
+      const encoderPhaseGiB = encoderRawGiB * safety;
+      const encoderCandidateGiB = frontendSavedGiB + encoderPhaseGiB;
+
+      const peakDynamicGiB = Math.max(frontendPhaseGiB, encoderCandidateGiB);
+      const peakPhase = frontendPhaseGiB >= encoderCandidateGiB
+        ? "FP32 frontend"
+        : optimizerMode === "full"
+          ? "encoder + saved frontend"
+          : "LoRA-active encoder tail";
+      const totalGiB = persistentGiB + inputGiB + peakDynamicGiB;
+
+      return {
+        batch: batch,
+        seconds: seconds,
+        layers: layers,
+        safety: safety,
+        rank: rank,
+        targetLayers: targetLayers,
+        headCount: headCount,
+        headClasses: headClasses,
+        attentionMode: attentionMode,
+        optimizerMode: optimizerMode,
+        includePaddingMask: includePaddingMask,
+        modules: modules,
+        lengths: lengths,
+        baseParams: baseParams,
+        adapterParams: adapterParams,
+        taskHeadParams: taskHeadParams,
+        trainableParams: trainableParams,
+        activeLayers: activeLayers,
+        persistentGiB: persistentGiB,
+        inputGiB: inputGiB,
+        stage1TensorGiB: gib(stage1TensorBytes),
+        stage2TensorGiB: gib(stage2TensorBytes),
+        frontendOutputFp32GiB: gib(frontendOutputFp32Bytes),
+        latentFp16GiB: gib(latentFp16Bytes),
+        frozenFrontendRawGiB: gib(frozenFrontendForwardBytes),
+        frontendSavedGiB: frontendSavedGiB,
+        frontendPhaseGiB: frontendPhaseGiB,
+        linearEncoderGiB: linearEncoderGiB,
+        quadraticAttentionGiB: quadraticAttentionGiB,
+        formattedMaskGiB: formattedMaskGiB,
+        encoderRawGiB: encoderRawGiB,
+        encoderPhaseGiB: encoderPhaseGiB,
+        encoderCandidateGiB: encoderCandidateGiB,
+        peakDynamicGiB: peakDynamicGiB,
+        peakPhase: peakPhase,
+        totalGiB: totalGiB,
+      };
+    }
+
+    function optionsFromControls() {
+      return {
+        batch: numberValue("batch"),
+        seconds: numberValue("seconds"),
+        safety: numberValue("safety"),
+        rank: numberValue("rank"),
+        targetLayers: numberValue("targetLayers"),
+        headCount: numberValue("headCount"),
+        headClasses: numberValue("headClasses"),
+        attentionMode: radioValue("attention"),
+        optimizerMode: radioValue("optimizer"),
+        includePaddingMask: byId("attentionMask").checked,
+        modules: selectedModules(),
+      };
     }
 
     function calculate() {
       clampTargetLayers();
-
-      const batch = Math.max(1, numberValue("batch"));
-      const seconds = Math.max(0.1, numberValue("seconds"));
-      const labelRate = Math.max(1, numberValue("labelRate"));
-      const layers = Math.max(1, numberValue("layers"));
-      const safety = Math.max(1, numberValue("safety"));
-      const rank = Math.max(1, numberValue("rank"));
-      const targetLayers = Math.max(1, numberValue("targetLayers"));
-      const headCount = Math.max(0, numberValue("headCount"));
-      const headClasses = Math.max(1, numberValue("headClasses"));
-      const attentionMode = radioValue("attention");
-      const optimizerMode = radioValue("optimizer");
-      const includeMask = byId("attentionMask").checked;
-      const frames = Math.round(seconds * labelRate);
-      const modules = selectedModules();
-
-      const baseParams = BASE_OTHER_PARAMS + PARAMS_PER_LAYER * layers;
-      const adapterParams = loraParams(rank, targetLayers, modules);
-      const taskHeadParams = headParams(headCount, headClasses);
-
-      const fullParamGiB = gib(baseParams * FULL_ADAM_BYTES_PER_PARAM);
-      const loraParamGiB = gib(
-        baseParams * FROZEN_FP16_BYTES_PER_PARAM
-        + (adapterParams + taskHeadParams) * TRAINABLE_ADAM_BYTES_PER_PARAM
-      );
-      const paramGiB = optimizerMode === "full" ? fullParamGiB : loraParamGiB;
-
-      const layerScale = layers / 24;
-      const linearActGiB = layerScale * batch * FLASH_ACT_COEF * frames;
-      const quadraticActGiB = layerScale * batch * STANDARD_ATTENTION_COEF * frames * frames;
-      const activationGiB = safety * (attentionMode === "flash" ? linearActGiB : linearActGiB + quadraticActGiB);
-      const maskGiB = includeMask ? gib(batch * frames * frames * 2) : 0;
-      const totalGiB = paramGiB + activationGiB + maskGiB;
-
-      updateSummary({
-        totalGiB,
-        frames,
-        adapterParams,
-        baseParams,
-        attentionMode,
-        optimizerMode,
-      });
-      updateBreakdown([
-        ["Params + optimizer", paramGiB, "primary"],
-        ["Activations", activationGiB, "primary"],
-        ["Attention mask", maskGiB, "warning"],
-      ], totalGiB);
-      updateFormula({
-        batch,
-        seconds,
-        labelRate,
-        frames,
-        layers,
-        safety,
-        attentionMode,
-        optimizerMode,
-        paramGiB,
-        activationGiB,
-        maskGiB,
-        totalGiB,
-      });
-      updateModuleTable(modules, rank, targetLayers);
+      const data = calculateMuQMemory(optionsFromControls());
+      updateSummary(data);
+      updatePipeline(data);
+      updateBreakdown(data);
+      updateFormula(data);
+      updateModuleTable(data.modules, data.rank, data.targetLayers);
     }
 
     function updateSummary(data) {
       byId("totalMemory").textContent = formatGiB(data.totalGiB);
-      byId("sequenceCaption").textContent = `S = ${data.frames.toLocaleString()} encoder frames`;
-      byId("framesMetric").textContent = data.frames.toLocaleString();
-      byId("loraParamMetric").textContent = formatParams(data.adapterParams);
-      byId("baseParamMetric").textContent = formatParams(data.baseParams);
-      byId("modeMetric").textContent = data.attentionMode === "flash" ? "Flash" : "Non-Flash";
-      byId("totalCaption").textContent = data.optimizerMode === "full"
-        ? "Full-model FP16 + AdamW estimate"
-        : "LoRA-only optimizer estimate";
+      byId("sequenceCaption").textContent =
+        "Mel " + formatInteger(data.lengths.trimmedMelFrames)
+        + " → latent " + formatInteger(data.lengths.latentFrames);
+      byId("totalCaption").textContent =
+        (data.optimizerMode === "full" ? "Full-backbone comparison" : "LoRA + head steady state")
+        + " • phase-aware peak";
+      byId("peakPhase").textContent = "Peak phase: " + data.peakPhase;
+      byId("melMetric").textContent =
+        formatInteger(data.lengths.rawMelFrames)
+        + " → "
+        + formatInteger(data.lengths.trimmedMelFrames);
+      byId("stage1Metric").textContent = formatGiB(data.stage1TensorGiB);
+      byId("stage1Shape").textContent =
+        "["
+        + formatInteger(data.batch)
+        + ", 512, 64, "
+        + formatInteger(data.lengths.stage1Frames)
+        + "] FP32";
+      byId("latentMetric").textContent = formatInteger(data.lengths.latentFrames);
+      byId("activeLayersMetric").textContent =
+        formatInteger(data.activeLayers) + " / " + formatInteger(data.layers);
+      byId("activeLayersSub").textContent =
+        data.optimizerMode === "full" ? "Full backbone" : "LoRA target tail";
     }
 
-    function updateBreakdown(rows, totalGiB) {
-      const maxValue = Math.max(totalGiB, 0.001);
-      byId("breakdownBars").innerHTML = rows.map(([label, value, tone]) => {
+    function pipelineStep(stage, count, shape) {
+      return [
+        '<div class="pipeline-step">',
+        '<div class="stage">', stage, '</div>',
+        '<div class="count">', formatInteger(count), '</div>',
+        '<div class="shape">', shape, '</div>',
+        '</div>',
+      ].join("");
+    }
+
+    function updatePipeline(data) {
+      byId("pipeline").innerHTML = [
+        pipelineStep(
+          "Waveform samples",
+          data.lengths.samples,
+          "[B, samples] @ 24 kHz"
+        ),
+        pipelineStep(
+          "Raw Mel frames",
+          data.lengths.rawMelFrames,
+          "[B, 128, raw_mel] @ 100 Hz"
+        ),
+        pipelineStep(
+          "Trimmed MuQ Mel",
+          data.lengths.trimmedMelFrames,
+          "[B, 128, mel] after [..., :-1]"
+        ),
+        pipelineStep(
+          "Frontend stage 1",
+          data.lengths.stage1Frames,
+          "[B, 512, 64, stage1] FP32"
+        ),
+        pipelineStep(
+          "Conformer latent S",
+          data.lengths.latentFrames,
+          "[B, S, 1024] @ 25 Hz"
+        ),
+      ].join("");
+    }
+
+    function updateBreakdown(data) {
+      const rows = [
+        ["Persistent params + optimizer", data.persistentGiB, "primary"],
+        ["Raw Mel input batch", data.inputGiB, "muted"],
+        ["Frontend phase candidate", data.frontendPhaseGiB, "secondary"],
+        [
+          data.optimizerMode === "full"
+            ? "Encoder + saved frontend"
+            : "Encoder phase candidate",
+          data.encoderCandidateGiB,
+          "primary",
+        ],
+        ["Padding 4D mask (inside encoder)", data.formattedMaskGiB, "warning"],
+      ];
+      const maxValue = Math.max(data.totalGiB, 0.001);
+      byId("breakdownBars").innerHTML = rows.map(function (row) {
+        const label = row[0];
+        const value = row[1];
+        const tone = row[2];
         const percent = Math.max(0, Math.min(100, (value / maxValue) * 100));
-        const barClass = tone === "warning" ? "bar warning" : tone === "secondary" ? "bar secondary" : "bar";
-        return `
-          <div class="bar-row">
-            <div class="bar-label">${label}</div>
-            <div class="bar-track"><div class="${barClass}" style="width:${percent}%"></div></div>
-            <div class="bar-value">${formatGiB(value)}</div>
-          </div>
-        `;
+        const barClass = tone === "warning"
+          ? "bar warning"
+          : tone === "secondary"
+            ? "bar secondary"
+            : tone === "muted"
+              ? "bar muted"
+              : "bar";
+        return [
+          '<div class="bar-row">',
+          '<div class="bar-label" title="', label, '">', label, '</div>',
+          '<div class="bar-track"><div class="', barClass, '" style="width:', percent, '%"></div></div>',
+          '<div class="bar-value">', formatGiB(value), '</div>',
+          '</div>',
+        ].join("");
       }).join("");
+
+      byId("phaseNote").textContent =
+        "Peak = persistent "
+        + formatGiB(data.persistentGiB)
+        + " + input "
+        + formatGiB(data.inputGiB)
+        + " + max(frontend "
+        + formatGiB(data.frontendPhaseGiB)
+        + ", encoder candidate "
+        + formatGiB(data.encoderCandidateGiB)
+        + "). The two phase candidates are not added together.";
     }
 
     function updateFormula(data) {
-      const modeFormula = data.attentionMode === "flash"
-        ? "activation = k * (L / 24) * B * 0.001465 * S"
-        : "activation = k * (L / 24) * B * (0.001465 * S + 0.000001431 * S^2)";
-      const optimizer = data.optimizerMode === "full"
-        ? "params = base_params * 16 bytes"
-        : "params = frozen_base_params * 2 bytes + trainable_lora_head_params * 16 bytes";
-      byId("formulaBlock").textContent = [
-        `S = round(seconds * label_rate) = round(${data.seconds} * ${data.labelRate}) = ${data.frames}`,
-        optimizer,
-        modeFormula,
-        `mask = ${data.maskGiB > 0 ? "B * S^2 * 2 bytes" : "disabled"}`,
+      const lines = [
+        "Length domains",
+        "samples     = round(seconds * 24000) = " + formatInteger(data.lengths.samples),
+        "raw_mel     = floor(samples / 240) + 1 = " + formatInteger(data.lengths.rawMelFrames),
+        "trimmed_mel = raw_mel - 1 = " + formatInteger(data.lengths.trimmedMelFrames),
+        "stage1      = ceil(trimmed_mel / 2) = " + formatInteger(data.lengths.stage1Frames),
+        "latent S    = ceil(stage1 / 2) = " + formatInteger(data.lengths.latentFrames),
         "",
-        `params      = ${formatGiB(data.paramGiB)}`,
-        `activation  = ${formatGiB(data.activationGiB)}`,
-        `mask        = ${formatGiB(data.maskGiB)}`,
-        `total       = ${formatGiB(data.totalGiB)}`,
-      ].join("\n");
+        "Persistent memory",
+        "feature-only base params = " + formatInteger(data.baseParams.total),
+        "  frontend FP32 = " + formatInteger(data.baseParams.frontendFp32),
+        "  non-frontend norms FP32 = " + formatInteger(data.baseParams.normFp32),
+        "  remaining base FP16 = " + formatInteger(data.baseParams.otherFp16),
+        "LoRA params = " + formatInteger(data.adapterParams),
+        "task-head params = " + formatInteger(data.taskHeadParams),
+        "persistent = " + formatGiB(data.persistentGiB),
+        "",
+        "Frontend phase",
+        "stage1 tensor = B * 512 * 64 * stage1 * 4 bytes = " + formatGiB(data.stage1TensorGiB),
+        "stage2 tensor = B * 512 * 32 * S * 4 bytes = " + formatGiB(data.stage2TensorGiB),
+        "frozen frontend raw peak = max(3*A1, A1+3*A2, A2+out32, out32+latent16)",
+        "frontend phase = k * raw peak = " + formatGiB(data.frontendPhaseGiB),
+        data.optimizerMode === "full"
+          ? "saved frontend = k * (5*A1 + 5*A2) = " + formatGiB(data.frontendSavedGiB)
+          : "saved frontend = 0 (frozen frontend has no autograd graph)",
+        "",
+        "Encoder phase",
+        "backward-active layers = " + formatInteger(data.activeLayers),
+        "linear latent activation = " + formatGiB(data.linearEncoderGiB),
+        "non-Flash latent S^2 term = " + formatGiB(data.quadraticAttentionGiB),
+        "padding 4D mask = " + formatGiB(data.formattedMaskGiB),
+        "encoder phase = k * (latent + linear + S^2 + mask) = " + formatGiB(data.encoderPhaseGiB),
+        "",
+        "Peak composition",
+        "dynamic peak = max(frontend phase, saved frontend + encoder phase)",
+        "total = persistent + raw Mel input + dynamic peak",
+        "total = " + formatGiB(data.totalGiB) + " (" + data.peakPhase + ")",
+      ];
+      byId("formulaBlock").textContent = lines.join("\n");
     }
 
     function updateModuleTable(modules, rank, targetLayers) {
       if (modules.length === 0) {
-        byId("moduleTable").innerHTML = `<tr><td colspan="3">No LoRA modules selected</td></tr>`;
+        byId("moduleTable").innerHTML = '<tr><td colspan="3">No LoRA modules selected</td></tr>';
         return;
       }
-      byId("moduleTable").innerHTML = modules.map((name) => {
+      byId("moduleTable").innerHTML = modules.map(function (name) {
         const perLayer = moduleDefs[name].perRank * rank;
         const total = perLayer * targetLayers;
-        return `
-          <tr>
-            <td>${moduleDefs[name].label}</td>
-            <td>${formatParams(perLayer)}</td>
-            <td>${formatParams(total)}</td>
-          </tr>
-        `;
+        return [
+          "<tr>",
+          "<td>", moduleDefs[name].label, "</td>",
+          "<td>", formatParams(perLayer), "</td>",
+          "<td>", formatParams(total), "</td>",
+          "</tr>",
+        ].join("");
       }).join("");
     }
 
-    linkedInputs.forEach(([rangeId, numberId]) => {
-      const range = byId(rangeId);
-      const number = byId(numberId);
-      range.addEventListener("input", () => {
+    linkedInputs.forEach(function (pair) {
+      const range = byId(pair[0]);
+      const number = byId(pair[1]);
+      range.addEventListener("input", function () {
         number.value = range.value;
         calculate();
       });
-      number.addEventListener("input", () => {
+      number.addEventListener("input", function () {
         range.value = number.value;
         calculate();
       });
     });
 
-    document.querySelectorAll("input").forEach((input) => {
+    document.querySelectorAll("input").forEach(function (input) {
       input.addEventListener("change", calculate);
     });
 
+    window.calculateMuQMemory = calculateMuQMemory;
+    window.MUQ_MEMORY_PRESET = PRESET;
     calculate();
   </script>
 </body>

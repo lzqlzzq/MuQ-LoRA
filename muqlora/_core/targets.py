@@ -34,6 +34,32 @@ def validate_adapter_tensor_keys(
         raise ValueError(f"adapter tensor keys mismatch: missing={missing}, extra={extra}")
 
 
+def iter_injection_targets(
+    model,
+    target_modules: tuple[str, ...],
+    num_target_layers: int,
+):
+    layer_count = num_target_layers
+    layers = list(model.model.conformer.layers)
+    for layer_index in range(len(layers) - 1, -1, -1):
+        layer = layers[layer_index]
+        if layer_count:
+            for name, module in layer.named_modules():
+                if name.split(".")[-1] in target_modules:
+                    yield (
+                        f"model.conformer.layers.{layer_index}.{name}",
+                        module,
+                    )
+
+            layer_count -= 1
+
+
+def replace_target_module(model, target_path: str, replacement: nn.Module):
+    parent_path, name = target_path.rsplit(".", 1)
+    parent = model.get_submodule(parent_path)
+    setattr(parent, name, replacement)
+
+
 def inject_lora_targets(
     model,
     target_modules: tuple[str, ...],
@@ -43,43 +69,34 @@ def inject_lora_targets(
     compute_dtype: torch.dtype,
 ) -> list[str]:
     lora_target_names: list[str] = []
-    layer_count = num_target_layers
 
-    layers = list(model.model.conformer.layers)
-    for layer_index in range(len(layers) - 1, -1, -1):
-        layer = layers[layer_index]
-        if layer_count:
-            for name, module in layer.named_modules():
-                if name.split(".")[-1] in target_modules:
-                    if isinstance(module, nn.Linear):
-                        module = LoRALinear(
-                            module,
-                            r,
-                            alpha,
-                            compute_dtype=compute_dtype,
-                        )
-                    elif isinstance(module, nn.Conv1d):
-                        module = LoRAConv1d(
-                            module,
-                            r,
-                            alpha,
-                            compute_dtype=compute_dtype,
-                        )
-                    else:
-                        raise TypeError(
-                            f"target module {name!r} is not nn.Linear or nn.Conv1d"
-                        )
+    for target_path, module in iter_injection_targets(
+        model,
+        target_modules=target_modules,
+        num_target_layers=num_target_layers,
+    ):
+        if isinstance(module, nn.Linear):
+            replacement = LoRALinear(
+                module,
+                r,
+                alpha,
+                compute_dtype=compute_dtype,
+            )
+        elif isinstance(module, nn.Conv1d):
+            replacement = LoRAConv1d(
+                module,
+                r,
+                alpha,
+                compute_dtype=compute_dtype,
+            )
+        else:
+            target_name = target_path.split(".", 4)[-1]
+            raise TypeError(
+                f"target module {target_name!r} is not nn.Linear or nn.Conv1d"
+            )
 
-                    parent = layer
-                    *path, last = name.split(".")
-                    for p in path:
-                        parent = getattr(parent, p)
-                    setattr(parent, last, module)
-                    lora_target_names.append(
-                        f"model.conformer.layers.{layer_index}.{name}"
-                    )
-
-            layer_count -= 1
+        replace_target_module(model, target_path, replacement)
+        lora_target_names.append(target_path)
 
     return lora_target_names
 
@@ -88,6 +105,41 @@ def iter_lora_modules(model):
     for name, module in model.named_modules():
         if isinstance(module, (LoRALinear, LoRAConv1d)):
             yield name, module
+
+
+def merge_lora_targets(model) -> list[str]:
+    merged_target_names = []
+
+    # Materialize the targets before replacing wrappers in the module tree.
+    for target_path, wrapper in list(iter_lora_modules(model)):
+        base_module = wrapper.module
+        base_weight = base_module.weight
+
+        if isinstance(wrapper, LoRALinear):
+            lora_delta = (
+                wrapper.lora_B.weight.detach().float()
+                @ wrapper.lora_A.weight.detach().float()
+            )
+        else:
+            lora_delta = (
+                wrapper.lora_B.weight.detach().float().flatten(1)
+                @ wrapper.lora_A.weight.detach().float().flatten(1)
+            ).reshape_as(base_weight)
+
+        # Accumulate in FP32 and cast only the final merged value back to the
+        # base dtype. This avoids prematurely rounding the LoRA update.
+        merged_weight = torch.add(
+            base_weight.detach().float(),
+            lora_delta,
+            alpha=wrapper.scaling,
+        )
+        with torch.no_grad():
+            base_weight.copy_(merged_weight.to(dtype=base_weight.dtype))
+
+        replace_target_module(model, target_path, base_module)
+        merged_target_names.append(target_path)
+
+    return merged_target_names
 
 
 def target_manifest(model) -> list[dict[str, Any]]:

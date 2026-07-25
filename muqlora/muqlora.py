@@ -25,6 +25,7 @@ from muqlora._core.targets import (
     copy_lora_tensors,
     inject_lora_targets,
     iter_lora_modules,
+    merge_lora_targets,
     target_manifest,
     validate_adapter_manifest,
 )
@@ -229,6 +230,16 @@ class MuQLoRA(nn.Module):
             self.task_head.load_state_dict(head_state)
             self.task_head.requires_grad_(True)
         self.assert_dtype_policy()
+
+    def merge_lora(self) -> "MuQLoRA":
+        """Merge the active LoRA weights into the frozen base model in place.
+
+        This unloads all LoRA modules and is intended as a terminal deployment
+        operation; adapter switching and export are not supported afterwards.
+        """
+        merge_lora_targets(self.model)
+        self._lora_target_names.clear()
+        return self
 
     def save_pretrained(self, path: str | Path):
         warnings.warn(
